@@ -1,7 +1,7 @@
-
 import html
 import re
 import urllib.parse
+from datetime import datetime, timezone
 
 from core.feed import (
     fetch_latest_feed,
@@ -17,9 +17,9 @@ def fetch_federal_reserve():
     source = "Federal Reserve"
 
     try:
-        from datetime import datetime, timezone
-
-        year = datetime.now(timezone.utc).year
+        year = datetime.now(
+            timezone.utc
+        ).year
 
         url = (
             "https://www.federalreserve.gov/"
@@ -27,51 +27,70 @@ def fetch_federal_reserve():
             f"{year}-press.htm"
         )
 
-        page = download(url).decode(
+        page = download(
+            url
+        ).decode(
             "utf-8",
             errors="ignore",
         )
 
         matches = re.findall(
-            r"""href=["']([^"']*/newsevents/pressreleases/[^"']+\.htm)["'][^>]*>(.*?)</a>""",
+            r'href=["\']'
+            r'([^"\']*/newsevents/'
+            r'pressreleases/'
+            r'[^"\']+\.htm)'
+            r'["\'][^>]*>'
+            r'(.*?)</a>',
             page,
             re.I | re.S,
         )
 
         if not matches:
             raise RuntimeError(
-                "No Federal Reserve press releases found"
+                "No Federal Reserve "
+                "press releases found"
             )
 
         link, raw_title = matches[0]
 
         title = " ".join(
             html.unescape(
-                re.sub(r"<[^>]+>", " ", raw_title)
+                re.sub(
+                    r"<[^>]+>",
+                    " ",
+                    raw_title,
+                )
             ).split()
         )
 
         if not title:
             raise RuntimeError(
-                "Federal Reserve press release has no title"
+                "Newest Federal Reserve "
+                "release has no title"
             )
 
         send_one(
             source,
             "🇺🇸",
             title,
-            urllib.parse.urljoin(url, link),
+            urllib.parse.urljoin(
+                url,
+                link,
+            ),
             ".last_fed_news",
         )
 
     except Exception as error:
         print(
-            f"{source} failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
 
 
 def fetch_ecb():
-    source = "European Central Bank (ECB)"
+    source = (
+        "European Central Bank (ECB)"
+    )
 
     try:
         url = (
@@ -79,7 +98,9 @@ def fetch_ecb():
             "rss/press.html"
         )
 
-        items = fetch_latest_feed(url)
+        items = fetch_latest_feed(
+            url
+        )
 
         if not items:
             raise RuntimeError(
@@ -93,11 +114,15 @@ def fetch_ecb():
         stable_id = item_id(item)
 
         if link:
-            link = urllib.parse.urljoin(url, link)
+            link = urllib.parse.urljoin(
+                url,
+                link,
+            )
 
         if not title or not link:
             raise RuntimeError(
-                "Newest ECB entry has no title/link"
+                "Newest ECB entry "
+                "has no title/link"
             )
 
         send_one(
@@ -111,7 +136,8 @@ def fetch_ecb():
 
     except Exception as error:
         print(
-            f"{source} failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
 
 
@@ -124,7 +150,9 @@ def fetch_boj():
             "en/rss/whatsnew.xml"
         )
 
-        items = fetch_latest_feed(url)
+        items = fetch_latest_feed(
+            url
+        )
 
         if not items:
             raise RuntimeError(
@@ -138,11 +166,15 @@ def fetch_boj():
         stable_id = item_id(item)
 
         if link:
-            link = urllib.parse.urljoin(url, link)
+            link = urllib.parse.urljoin(
+                url,
+                link,
+            )
 
         if not title or not link:
             raise RuntimeError(
-                "Newest BOJ entry has no title/link"
+                "Newest BOJ entry "
+                "has no title/link"
             )
 
         send_one(
@@ -156,9 +188,9 @@ def fetch_boj():
 
     except Exception as error:
         print(
-            f"{source} failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
-
 
 
 def fetch_boe():
@@ -171,7 +203,9 @@ def fetch_boe():
             "&InfiniteScrolling=False"
         )
 
-        page = download(url).decode(
+        page = download(
+            url
+        ).decode(
             "utf-8",
             errors="ignore",
         )
@@ -186,30 +220,37 @@ def fetch_boe():
             re.I | re.S,
         )
 
-        ignored_titles = {
-            "events",
-            "news",
-            "read more",
-            "read more about this",
-            "home",
-            "search",
-            "menu",
-            "latest news",
-        }
-
         for link, raw in matches:
-            link = html.unescape(link.strip())
+            link = html.unescape(
+                link.strip()
+            )
 
             absolute_link = urllib.parse.urljoin(
                 "https://www.bankofengland.co.uk/",
                 link,
             )
 
-            path = urllib.parse.urlparse(
+            parsed = urllib.parse.urlparse(
                 absolute_link
-            ).path.lower()
+            )
 
-            if "/news/" not in path:
+            if (
+                parsed.netloc.lower()
+                != "www.bankofengland.co.uk"
+            ):
+                continue
+
+            path = parsed.path.lower()
+
+            # Accept only dated BoE news articles.
+            # This excludes navigation pages such as:
+            # /news/news
+            # /news/events
+            if not re.match(
+                r"^/news/\d{4}/",
+                path,
+                re.I,
+            ):
                 continue
 
             title = html.unescape(
@@ -220,12 +261,11 @@ def fetch_boe():
                 )
             )
 
-            title = " ".join(title.split())
+            title = " ".join(
+                title.split()
+            )
 
             if not title:
-                continue
-
-            if title.casefold() in ignored_titles:
                 continue
 
             if len(title) < 15:
@@ -234,16 +274,21 @@ def fetch_boe():
             if absolute_link in seen:
                 continue
 
-            seen.add(absolute_link)
+            seen.add(
+                absolute_link
+            )
 
             candidates.append(
-                (absolute_link, title)
+                (
+                    absolute_link,
+                    title,
+                )
             )
 
         if not candidates:
             raise RuntimeError(
-                "No valid Bank of England news "
-                "headlines found"
+                "No dated Bank of England "
+                "news articles found"
             )
 
         link, title = candidates[0]
