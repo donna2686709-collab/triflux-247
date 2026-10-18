@@ -177,12 +177,7 @@ def fetch_federal_reserve():
 
         link, raw_title = matches[0]
 
-        title = re.sub(
-            r"<[^>]+>",
-            "",
-            raw_title
-        )
-
+        title = re.sub(r"<[^>]+>", "", raw_title)
         title = html.unescape(title)
 
         if link.startswith("/"):
@@ -250,9 +245,7 @@ def fetch_ecb():
         )
 
     except Exception as error:
-        print(
-            f"ECB failed, skipping: {error}"
-        )
+        print(f"ECB failed, skipping: {error}")
 
 
 # ============================================================
@@ -298,10 +291,7 @@ def fetch_boj():
 
         if not link:
             for node in item.findall("{*}link"):
-                link = node.attrib.get(
-                    "href",
-                    ""
-                )
+                link = node.attrib.get("href", "")
 
                 if link:
                     break
@@ -315,9 +305,7 @@ def fetch_boj():
         )
 
     except Exception as error:
-        print(
-            f"BOJ failed, skipping: {error}"
-        )
+        print(f"BOJ failed, skipping: {error}")
 
 
 # ============================================================
@@ -402,9 +390,7 @@ def fetch_boe():
         )
 
     except Exception as error:
-        print(
-            f"BoE failed, skipping: {error}"
-        )
+        print(f"BoE failed, skipping: {error}")
 
 
 # ============================================================
@@ -425,14 +411,6 @@ def fetch_treasury():
             errors="ignore"
         )
 
-        print(
-            f"Treasury: downloaded "
-            f"{len(raw_data)} bytes."
-        )
-
-        # Treasury currently exposes article paths inside
-        # the page source, but not necessarily as normal
-        # href attributes. Search the complete source.
         patterns = [
             r'/news/press-releases/[A-Za-z]{1,10}[0-9]{2,10}',
             r'\\/news\\/press-releases\\/'
@@ -456,11 +434,6 @@ def fetch_treasury():
                 if path not in article_paths:
                     article_paths.append(path)
 
-        print(
-            f"Treasury: article paths found = "
-            f"{len(article_paths)}"
-        )
-
         if not article_paths:
             raise RuntimeError(
                 "No Treasury article paths found"
@@ -471,11 +444,6 @@ def fetch_treasury():
         selected_link = (
             "https://home.treasury.gov"
             + selected_path
-        )
-
-        print(
-            f"Treasury: selected article = "
-            f"{selected_link}"
         )
 
         article_page = download(
@@ -539,10 +507,6 @@ def fetch_treasury():
                 "but title could not be extracted"
             )
 
-        print(
-            f"Treasury: title = {title}"
-        )
-
         process_news(
             "U.S. Department of the Treasury",
             "🇺🇸",
@@ -558,35 +522,77 @@ def fetch_treasury():
 
 
 # ============================================================
+# U.S. Securities and Exchange Commission
+# ============================================================
+
+def fetch_sec():
+    try:
+        feed_url = (
+            "https://www.sec.gov/news/pressreleases.rss"
+        )
+
+        feed_data = download(feed_url)
+
+        root = ET.fromstring(feed_data)
+
+        items = root.findall(".//item")
+
+        if not items:
+            raise RuntimeError(
+                "No SEC press release items found"
+            )
+
+        item = items[0]
+
+        title = (
+            item.findtext("title") or ""
+        ).strip()
+
+        link = (
+            item.findtext("link") or ""
+        ).strip()
+
+        if not link:
+            guid = (
+                item.findtext("guid") or ""
+            ).strip()
+
+            if guid.startswith("http"):
+                link = guid
+
+        process_news(
+            "U.S. Securities and Exchange Commission (SEC)",
+            "🇺🇸",
+            title,
+            link,
+            ".last_sec_news"
+        )
+
+    except Exception as error:
+        print(
+            f"SEC failed, skipping: {error}"
+        )
+
+
+# ============================================================
 # Main
 # ============================================================
 
 def main():
-    print(
-        "===================================="
-    )
-    print(
-        "TriFlux 24/7 Financial Radar"
-    )
-    print(
-        "===================================="
-    )
+    print("====================================")
+    print("TriFlux 24/7 Financial Radar")
+    print("====================================")
 
     fetch_federal_reserve()
     fetch_ecb()
     fetch_boj()
     fetch_boe()
     fetch_treasury()
+    fetch_sec()
 
-    print(
-        "===================================="
-    )
-    print(
-        "Radar scan complete."
-    )
-    print(
-        "===================================="
-    )
+    print("====================================")
+    print("Radar scan complete.")
+    print("====================================")
 
 
 if __name__ == "__main__":
