@@ -104,77 +104,104 @@ jobs:
               print("New Federal Reserve news sent.")
 
           PY
-      - name: Fetch ECB latest news
+            - name: Fetch ECB latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
         run: |
           python3 - <<'PY'
           import os
+          import time
           import urllib.request
           import urllib.parse
           import xml.etree.ElementTree as ET
 
           feed_url = "https://www.ecb.europa.eu/rss/press.html"
-          req = urllib.request.Request(
-              feed_url,
-              headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
-          )
 
-          with urllib.request.urlopen(req, timeout=30) as response:
-              root = ET.fromstring(response.read())
+          try:
+              data = None
 
-          items = root.findall(".//item")
-          if not items:
-              raise RuntimeError("No ECB news items found")
+              for attempt in range(3):
+                  try:
+                      req = urllib.request.Request(
+                          feed_url,
+                          headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
+                      )
 
-          item = items[0]
-          title = (item.findtext("title") or "").strip()
-          link = (item.findtext("link") or "").strip()
+                      with urllib.request.urlopen(req, timeout=30) as response:
+                          data = response.read()
 
-          if not title or not link:
-              raise RuntimeError("ECB news item missing title or link")
+                      break
 
-          state_file = ".last_ecb_news"
-          previous_link = ""
+                  except Exception as e:
+                      print(f"ECB attempt {attempt + 1} failed: {e}")
+                      if attempt < 2:
+                          time.sleep(5)
 
-          if os.path.exists(state_file):
-              with open(state_file, "r", encoding="utf-8") as f:
-                  previous_link = f.read().strip()
+              if data is None:
+                  print("ECB unavailable after 3 attempts. Skipping ECB this run.")
 
-          if previous_link == link:
-              print("No new ECB news.")
-          else:
-              message = (
-                  "🇪🇺 European Central Bank (ECB)\n\n"
-                  f"📌 {title}\n\n"
-                  f"🔗 {link}\n\n"
-                  "📡 TriFlux 24/7 Financial Radar"
-              )
+              else:
+                  root = ET.fromstring(data)
+                  items = root.findall(".//item")
 
-              telegram_url = (
-                  "https://api.telegram.org/bot"
-                  + os.environ["BOT_TOKEN"]
-                  + "/sendMessage"
-              )
+                  if not items:
+                      raise RuntimeError("No ECB news items found")
 
-              data = urllib.parse.urlencode({
-                  "chat_id": os.environ["CHAT_ID"],
-                  "text": message,
-                  "disable_web_page_preview": "true"
-              }).encode()
+                  item = items[0]
 
-              request = urllib.request.Request(
-                  telegram_url, data=data, method="POST"
-              )
+                  title = (item.findtext("title") or "").strip()
+                  link = (item.findtext("link") or "").strip()
 
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  print(response.read().decode())
+                  if not title or not link:
+                      raise RuntimeError("ECB news item missing title or link")
 
-              with open(state_file, "w", encoding="utf-8") as f:
-                  f.write(link)
+                  state_file = ".last_ecb_news"
+                  previous_link = ""
 
-              print("New ECB news sent.")
+                  if os.path.exists(state_file):
+                      with open(state_file, "r", encoding="utf-8") as f:
+                          previous_link = f.read().strip()
+
+                  if previous_link == link:
+                      print("No new ECB news.")
+
+                  else:
+                      message = (
+                          "🇪🇺 European Central Bank (ECB)\n\n"
+                          f"📌 {title}\n\n"
+                          f"🔗 {link}\n\n"
+                          "📡 TriFlux 24/7 Financial Radar"
+                      )
+
+                      telegram_url = (
+                          "https://api.telegram.org/bot"
+                          + os.environ["BOT_TOKEN"]
+                          + "/sendMessage"
+                      )
+
+                      telegram_data = urllib.parse.urlencode({
+                          "chat_id": os.environ["CHAT_ID"],
+                          "text": message,
+                          "disable_web_page_preview": "true"
+                      }).encode()
+
+                      request = urllib.request.Request(
+                          telegram_url,
+                          data=telegram_data,
+                          method="POST"
+                      )
+
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          print(response.read().decode())
+
+                      with open(state_file, "w", encoding="utf-8") as f:
+                          f.write(link)
+
+                      print("New ECB news sent.")
+
+          except Exception as e:
+              print(f"ECB step failed, skipping this source: {e}")
           PY
       - name: Fetch BOJ latest news
         env:
