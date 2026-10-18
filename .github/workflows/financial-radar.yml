@@ -277,7 +277,7 @@ jobs:
           import urllib.request
           import urllib.parse
 
-          page_url = "https://www.imf.org/en/news"
+          page_url = "https://mediacenter.imf.org/newslisting?category=news"
 
           req = urllib.request.Request(
               page_url,
@@ -287,6 +287,7 @@ jobs:
           with urllib.request.urlopen(req, timeout=30) as response:
               page = response.read().decode("utf-8", errors="ignore")
 
+          print("IMF Media Center page downloaded, bytes:", len(page))
           matches = re.findall(
               r'href=["\']([^"\']*/en/news/articles/[^"\']+)["\'][^>]*>(.*?)</a>',
               page,
