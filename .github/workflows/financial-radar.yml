@@ -23,7 +23,7 @@ jobs:
 
           req = urllib.request.Request(
               feed_url,
-              headers={"User-Agent": "TriFlux-247/1.0"}
+              headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
           )
 
           with urllib.request.urlopen(req, timeout=30) as response:
@@ -31,18 +31,48 @@ jobs:
 
           root = ET.fromstring(xml_data)
 
-          ns = {"atom": "http://www.w3.org/2005/Atom"}
-          entry = root.find("atom:entry", ns)
+          # Federal Reserve feed uses Atom-style entries.
+          entries = root.findall(".//{*}entry")
 
-          if entry is None:
-              raise RuntimeError("No Federal Reserve news found")
+          # Also support normal RSS <item> feeds.
+          if not entries:
+              entries = root.findall(".//item")
 
-          title = entry.findtext("atom:title", default="", namespaces=ns).strip()
+          if not entries:
+              raise RuntimeError("No Federal Reserve news entries found")
 
-          link_element = entry.find("atom:link", ns)
-          link = link_element.get("href", "") if link_element is not None else ""
+          entry = entries[0]
 
-          updated = entry.findtext("atom:updated", default="", namespaces=ns)
+          def find_text(element, name):
+              node = element.find(f"{{*}}{name}")
+              if node is None:
+                  node = element.find(name)
+              if node is not None and node.text:
+                  return node.text.strip()
+              return ""
+
+          title = find_text(entry, "title")
+          updated = (
+              find_text(entry, "updated")
+              or find_text(entry, "published")
+              or find_text(entry, "pubDate")
+          )
+
+          link = ""
+
+          for link_node in entry.findall("{*}link"):
+              href = link_node.attrib.get("href")
+              if href:
+                  link = href
+                  break
+
+          if not link:
+              link_node = entry.find("link")
+              if link_node is not None:
+                  link = (link_node.text or "").strip()
+
+          if not title:
+              title = "Federal Reserve Update"
 
           message = (
               "🇺🇸 Federal Reserve\n\n"
@@ -55,7 +85,9 @@ jobs:
           bot_token = os.environ["BOT_TOKEN"]
           chat_id = os.environ["CHAT_ID"]
 
-          telegram_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+          telegram_url = (
+              f"https://api.telegram.org/bot{bot_token}/sendMessage"
+          )
 
           data = urllib.parse.urlencode({
               "chat_id": chat_id,
@@ -63,8 +95,14 @@ jobs:
               "disable_web_page_preview": "true"
           }).encode()
 
-          request = urllib.request.Request(telegram_url, data=data)
+          request = urllib.request.Request(
+              telegram_url,
+              data=data,
+              method="POST"
+          )
 
           with urllib.request.urlopen(request, timeout=30) as response:
-              print(response.read().decode())
+              result = response.read().decode()
+              print(result)
+
           PY
