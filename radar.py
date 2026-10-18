@@ -9,7 +9,6 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -23,10 +22,6 @@ GENERAL_USER_AGENT = (
 
 MAX_STATE_ITEMS = 500
 
-
-# ============================================================
-# DOWNLOAD
-# ============================================================
 
 def download(url, retries=4, sec=False):
     headers = {
@@ -92,10 +87,6 @@ def download(url, retries=4, sec=False):
     raise last_error
 
 
-# ============================================================
-# TELEGRAM
-# ============================================================
-
 def send_telegram(message):
     url = (
         "https://api.telegram.org/bot"
@@ -130,7 +121,6 @@ def send_telegram(message):
             if not result.get("ok"):
                 raise RuntimeError(str(result))
 
-            # Avoid Telegram bursts
             time.sleep(1.2)
             return
 
@@ -151,10 +141,6 @@ def send_telegram(message):
 
             raise
 
-
-# ============================================================
-# STATE / DEDUPLICATION
-# ============================================================
 
 def normalize_url(url):
     url = (url or "").strip()
@@ -194,7 +180,6 @@ def read_state(path):
                 "ids": [],
             }
 
-        # New JSON state format
         try:
             data = json.loads(raw)
 
@@ -222,8 +207,6 @@ def read_state(path):
         except json.JSONDecodeError:
             pass
 
-        # Old TriFlux state files contained
-        # one URL only. Keep them compatible.
         return {
             "initialized": True,
             "ids": [
@@ -268,10 +251,6 @@ def write_state(path, ids):
         path,
     )
 
-
-# ============================================================
-# MESSAGE
-# ============================================================
 
 def make_message(
     source,
@@ -371,10 +350,6 @@ def send_one(
     return True
 
 
-# ============================================================
-# XML / RSS HELPERS
-# ============================================================
-
 def item_title(item):
     node = item.find(
         "{*}title"
@@ -468,15 +443,6 @@ def item_id(item, link):
     return link
 
 
-# ============================================================
-# EXISTING RSS SOURCES
-#
-# IMPORTANT:
-# Existing TriFlux sources inspect only the newest item.
-# This deliberately preserves the old state-file behaviour
-# and prevents another historical-news flood.
-# ============================================================
-
 def fetch_latest_feed(
     source,
     flag,
@@ -536,10 +502,6 @@ def fetch_latest_feed(
         )
 
 
-# ============================================================
-# FEDERAL RESERVE
-# ============================================================
-
 def fetch_federal_reserve():
     source = "Federal Reserve"
 
@@ -578,9 +540,7 @@ def fetch_federal_reserve():
                 "press releases found"
             )
 
-        link, raw_title = (
-            matches[0]
-        )
+        link, raw_title = matches[0]
 
         title = " ".join(
             html.unescape(
@@ -610,10 +570,6 @@ def fetch_federal_reserve():
         )
 
 
-# ============================================================
-# ECB
-# ============================================================
-
 def fetch_ecb():
     fetch_latest_feed(
         "European Central Bank (ECB)",
@@ -622,10 +578,6 @@ def fetch_ecb():
         ".last_ecb_news",
     )
 
-
-# ============================================================
-# BANK OF JAPAN
-# ============================================================
 
 def fetch_boj():
     fetch_latest_feed(
@@ -636,14 +588,8 @@ def fetch_boj():
     )
 
 
-# ============================================================
-# BANK OF ENGLAND
-# ============================================================
-
 def fetch_boe():
-    source = (
-        "Bank of England (BoE)"
-    )
+    source = "Bank of England (BoE)"
 
     try:
         url = (
@@ -669,10 +615,7 @@ def fetch_boe():
         )
 
         for link, raw in matches:
-            if (
-                "/news/"
-                not in link.lower()
-            ):
+            if "/news/" not in link.lower():
                 continue
 
             title = " ".join(
@@ -715,10 +658,6 @@ def fetch_boe():
             f"skipping: {error}"
         )
 
-
-# ============================================================
-# TREASURY
-# ============================================================
 
 def extract_page_title(page):
     patterns = [
@@ -835,10 +774,6 @@ def fetch_treasury():
         )
 
 
-# ============================================================
-# SEC NEWS
-# ============================================================
-
 def fetch_sec_news():
     fetch_latest_feed(
         (
@@ -851,10 +786,6 @@ def fetch_sec_news():
         ".last_sec_news",
     )
 
-
-# ============================================================
-# BLS
-# ============================================================
 
 def fetch_bls_employment():
     fetch_latest_feed(
@@ -900,10 +831,6 @@ def fetch_bls_jolts():
         ".last_bls_jolts",
     )
 
-
-# ============================================================
-# BEA GDP / PCE
-# ============================================================
 
 def fetch_bea():
     source = "BEA GDP / PCE"
@@ -989,19 +916,15 @@ def fetch_bea():
         )
 
 
-# ============================================================
-# SEC EDGAR FILINGS
-# ============================================================
-
 SEC_FORMS = [
     (
         "Form 4",
         "4",
         ".last_sec_form4",
         (
-            "内部人持股变动申报；"
-            "仅凭 Form 4 本身不能一概"
-            "判断为买入或卖出"
+            "Insider ownership change filing; "
+            "Form 4 alone does not necessarily indicate "
+            "an open-market purchase or sale"
         ),
     ),
     (
@@ -1009,38 +932,38 @@ SEC_FORMS = [
         "SCHEDULE 13D",
         ".last_sec_13d",
         (
-            "持股超过 5% 的"
-            "受益所有权披露"
+            "Beneficial ownership disclosure "
+            "for certain holders above 5%"
         ),
     ),
     (
         "Schedule 13D/A",
         "SCHEDULE 13D/A",
         ".last_sec_13da",
-        "Schedule 13D 修订",
+        "Amendment to Schedule 13D",
     ),
     (
         "Schedule 13G",
         "SCHEDULE 13G",
         ".last_sec_13g",
         (
-            "部分投资者持股超过 5% 的"
-            "受益所有权披露"
+            "Beneficial ownership disclosure "
+            "for certain holders above 5%"
         ),
     ),
     (
         "Schedule 13G/A",
         "SCHEDULE 13G/A",
         ".last_sec_13ga",
-        "Schedule 13G 修订",
+        "Amendment to Schedule 13G",
     ),
     (
         "Form 8-K",
         "8-K",
         ".last_sec_8k",
         (
-            "企业重大事件 "
-            "Current Report"
+            "Current report covering material "
+            "corporate events"
         ),
     ),
     (
@@ -1048,9 +971,9 @@ SEC_FORMS = [
         "13F-HR",
         ".last_sec_13f",
         (
-            "机构季度持仓申报；"
-            "这是滞后披露，"
-            "不是实时交易"
+            "Quarterly institutional holdings report; "
+            "this is delayed disclosure, "
+            "not real-time trading activity"
         ),
     ),
     (
@@ -1058,9 +981,18 @@ SEC_FORMS = [
         "13F-HR/A",
         ".last_sec_13fa",
         (
-            "机构季度持仓修订；"
-            "这是滞后披露，"
-            "不是实时交易"
+            "Amendment to quarterly institutional "
+            "holdings report; this is delayed disclosure"
+        ),
+    ),
+    (
+        "Form 10-Q",
+        "10-Q",
+        ".last_sec_10q",
+        (
+            "Quarterly financial report used to monitor "
+            "revenue, earnings, cash flow, balance sheet, "
+            "and changes in business conditions"
         ),
     ),
 ]
@@ -1131,9 +1063,6 @@ def fetch_sec_form(
                     )
                 )
 
-        # An empty result is not treated as
-        # a fatal error. There simply may be
-        # no recent filing of that type.
         if not rows:
             print(
                 f"SEC {name}: "
@@ -1146,9 +1075,6 @@ def fetch_sec_form(
             state_file
         )
 
-        # First successful run:
-        # record everything currently visible
-        # but DO NOT send historical filings.
         if not state["initialized"]:
             seed = []
 
@@ -1196,8 +1122,6 @@ def fetch_sec_form(
             )
             return
 
-        # EDGAR feed is normally newest first.
-        # Send unseen filings oldest -> newest.
         for (
             stable_id,
             title,
@@ -1205,9 +1129,9 @@ def fetch_sec_form(
         ) in reversed(unseen):
 
             details = (
-                f"类型：{name}\n"
-                f"说明：{description}\n"
-                "来源：SEC EDGAR 官方申报"
+                f"Type: {name}\n"
+                f"Description: {description}\n"
+                "Source: Official SEC EDGAR filing"
             )
 
             send_one(
@@ -1241,13 +1165,8 @@ def fetch_sec_filings():
             *row
         )
 
-        # Deliberately slow down SEC requests.
         time.sleep(1.0)
 
-
-# ============================================================
-# NEW YORK FED SOFR
-# ============================================================
 
 def fetch_sofr():
     source = (
@@ -1343,8 +1262,6 @@ def fetch_sofr():
             state_file
         )
 
-        # First successful SOFR run:
-        # create baseline only.
         if not state["initialized"]:
             write_state(
                 state_file,
@@ -1376,10 +1293,10 @@ def fetch_sofr():
         )
 
         details = (
-            f"生效日期：{effective_date}\n"
-            f"SOFR：{rate}%\n"
-            "来源：Federal Reserve Bank "
-            "of New York 官方参考利率"
+            f"Effective date: {effective_date}\n"
+            f"SOFR: {rate}%\n"
+            "Source: Federal Reserve Bank "
+            "of New York official reference rate"
         )
 
         send_one(
@@ -1387,7 +1304,7 @@ def fetch_sofr():
             "🇺🇸",
             (
                 f"SOFR {rate}%"
-                f"（{effective_date}）"
+                f" ({effective_date})"
             ),
             link,
             state_file,
@@ -1402,17 +1319,15 @@ def fetch_sofr():
         )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
     print(
         "===================================="
     )
+
     print(
         "TriFlux 24/7 Financial Radar"
     )
+
     print(
         "UTC scan time:",
         datetime.now(
@@ -1421,11 +1336,11 @@ def main():
             timespec="seconds"
         ),
     )
+
     print(
         "===================================="
     )
 
-    # Existing TriFlux sources
     fetch_federal_reserve()
     fetch_ecb()
     fetch_boj()
@@ -1440,18 +1355,18 @@ def main():
 
     fetch_bea()
 
-    # Wall Street / institutional monitoring
     fetch_sec_filings()
 
-    # Market liquidity / funding conditions
     fetch_sofr()
 
     print(
         "===================================="
     )
+
     print(
         "Radar scan complete."
     )
+
     print(
         "===================================="
     )
