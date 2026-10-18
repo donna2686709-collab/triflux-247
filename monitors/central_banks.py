@@ -210,24 +210,35 @@ def fetch_boe():
             errors="ignore",
         )
 
-        candidates = []
-        seen = set()
-
-        matches = re.findall(
-            r'<a\b[^>]*\bhref\s*=\s*["\']'
-            r'([^"\']+)["\'][^>]*>(.*?)</a>',
-            page,
-            re.I | re.S,
+        print(
+            "BoE DEBUG: downloaded "
+            f"{len(page)} characters."
         )
 
-        for link, raw in matches:
-            link = html.unescape(
-                link.strip()
+        hrefs = re.findall(
+            r'href\s*=\s*["\']'
+            r'([^"\']+)'
+            r'["\']',
+            page,
+            re.I,
+        )
+
+        print(
+            "BoE DEBUG: total hrefs found = "
+            f"{len(hrefs)}"
+        )
+
+        boe_news_links = []
+        seen = set()
+
+        for href in hrefs:
+            href = html.unescape(
+                href.strip()
             )
 
             absolute_link = urllib.parse.urljoin(
                 "https://www.bankofengland.co.uk/",
-                link,
+                href,
             )
 
             parsed = urllib.parse.urlparse(
@@ -242,33 +253,7 @@ def fetch_boe():
 
             path = parsed.path.lower()
 
-            # Accept only dated BoE news articles.
-            # This excludes navigation pages such as:
-            # /news/news
-            # /news/events
-            if not re.match(
-                r"^/news/\d{4}/",
-                path,
-                re.I,
-            ):
-                continue
-
-            title = html.unescape(
-                re.sub(
-                    r"<[^>]+>",
-                    " ",
-                    raw,
-                )
-            )
-
-            title = " ".join(
-                title.split()
-            )
-
-            if not title:
-                continue
-
-            if len(title) < 15:
+            if "/news/" not in path:
                 continue
 
             if absolute_link in seen:
@@ -278,31 +263,53 @@ def fetch_boe():
                 absolute_link
             )
 
-            candidates.append(
-                (
-                    absolute_link,
-                    title,
+            boe_news_links.append(
+                absolute_link
+            )
+
+        print(
+            "BoE DEBUG: links containing "
+            f"/news/ = {len(boe_news_links)}"
+        )
+
+        for index, link in enumerate(
+            boe_news_links[:30],
+            start=1,
+        ):
+            print(
+                f"BoE DEBUG LINK {index}: "
+                f"{link}"
+            )
+
+        dated_links = []
+
+        for link in boe_news_links:
+            path = urllib.parse.urlparse(
+                link
+            ).path
+
+            if re.match(
+                r"^/news/\d{4}/",
+                path,
+                re.I,
+            ):
+                dated_links.append(
+                    link
                 )
-            )
 
-        if not candidates:
-            raise RuntimeError(
-                "No dated Bank of England "
-                "news articles found"
-            )
+        print(
+            "BoE DEBUG: dated article "
+            f"links = {len(dated_links)}"
+        )
 
-        link, title = candidates[0]
-
-        send_one(
-            source,
-            "🇬🇧",
-            title,
-            link,
-            ".last_boe_news",
+        print(
+            "BoE DEBUG TEST COMPLETE - "
+            "no Telegram message sent and "
+            "state file unchanged."
         )
 
     except Exception as error:
         print(
-            f"{source} failed, "
-            f"skipping: {error}"
+            f"{source} diagnostic failed: "
+            f"{error}"
         )
