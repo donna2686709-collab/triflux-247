@@ -330,28 +330,35 @@ def fetch_boe():
 
 def fetch_treasury():
     try:
-        page_url = (
-            "https://home.treasury.gov/news/press-releases"
-        )
+        page_url = "https://home.treasury.gov/news/press-releases"
 
         page = download(page_url).decode(
             "utf-8",
             errors="ignore"
         )
 
-        pattern = re.compile(
-            r'href=["\']'
-            r'([^"\']*/news/press-releases/[^"\']+)'
-            r'["\'][^>]*>(.*?)</a>',
-            re.IGNORECASE | re.DOTALL
+        anchors = re.findall(
+            r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            page,
+            flags=re.IGNORECASE | re.DOTALL
         )
-
-        matches = pattern.findall(page)
 
         selected_link = ""
         selected_title = ""
 
-        for link, raw_title in matches:
+        for link, raw_title in anchors:
+            clean_link = html.unescape(link)
+
+            parsed = urllib.parse.urlsplit(clean_link)
+            path = parsed.path.rstrip("/")
+
+            if not re.fullmatch(
+                r"/news/press-releases/[A-Za-z0-9_-]+",
+                path,
+                flags=re.IGNORECASE
+            ):
+                continue
+
             title = re.sub(
                 r"<[^>]+>",
                 " ",
@@ -364,16 +371,19 @@ def fetch_treasury():
             if len(title) < 15:
                 continue
 
-            if link.startswith("/"):
-                link = "https://home.treasury.gov" + link
-
-            elif not link.startswith("http"):
-                link = urllib.parse.urljoin(
-                    page_url,
-                    link
+            if clean_link.startswith("/"):
+                clean_link = (
+                    "https://home.treasury.gov"
+                    + clean_link
                 )
 
-            selected_link = link
+            elif not clean_link.startswith("http"):
+                clean_link = urllib.parse.urljoin(
+                    page_url,
+                    clean_link
+                )
+
+            selected_link = clean_link
             selected_title = title
             break
 
