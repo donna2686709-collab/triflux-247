@@ -16,6 +16,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # =========================
+      # Federal Reserve
+      # =========================
       - name: Fetch Federal Reserve latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -27,84 +30,118 @@ jobs:
           import html
           import urllib.request
           import urllib.parse
+          from datetime import datetime, timezone
 
-          page_url = "https://www.federalreserve.gov/newsevents/pressreleases/2026-press.htm"
-
-          req = urllib.request.Request(
-              page_url,
-              headers={
-                  "User-Agent": "Mozilla/5.0 (compatible; TriFlux247/1.0)"
-              }
-          )
-
-          with urllib.request.urlopen(req, timeout=30) as response:
-              page = response.read().decode("utf-8", errors="ignore")
-
-          pattern = re.compile(
-              r'href="([^"]*/newsevents/pressreleases/[^"]+\.htm)"[^>]*>(.*?)</a>',
-              re.IGNORECASE | re.DOTALL
-          )
-
-          matches = pattern.findall(page)
-
-          if not matches:
-              raise RuntimeError("No Federal Reserve press releases found")
-
-          link, raw_title = matches[0]
-
-          title = re.sub(r"<[^>]+>", "", raw_title)
-          title = html.unescape(title)
-          title = " ".join(title.split())
-
-          if link.startswith("/"):
-              link = "https://www.federalreserve.gov" + link
-          elif not link.startswith("http"):
-              link = urllib.parse.urljoin(page_url, link)
-
-          state_file = ".last_fed_news"
-
-          previous_link = ""
-          if os.path.exists(state_file):
-              with open(state_file, "r", encoding="utf-8") as f:
-                  previous_link = f.read().strip()
-
-          if previous_link == link:
-              print("No new Federal Reserve news.")
-          else:
-              message = (
-                  "🇺🇸 Federal Reserve\n\n"
-                  f"📌 {title}\n\n"
-                  f"🔗 {link}\n\n"
-                  "📡 TriFlux 24/7 Financial Radar"
+          try:
+              year = datetime.now(timezone.utc).year
+              page_url = (
+                  f"https://www.federalreserve.gov/"
+                  f"newsevents/pressreleases/{year}-press.htm"
               )
 
-              telegram_url = (
-                  f"https://api.telegram.org/bot"
-                  f"{os.environ['BOT_TOKEN']}/sendMessage"
+              req = urllib.request.Request(
+                  page_url,
+                  headers={
+                      "User-Agent": "Mozilla/5.0 (compatible; TriFlux247/1.0)"
+                  }
               )
 
-              data = urllib.parse.urlencode({
-                  "chat_id": os.environ["CHAT_ID"],
-                  "text": message,
-                  "disable_web_page_preview": "true"
-              }).encode()
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  page = response.read().decode(
+                      "utf-8",
+                      errors="ignore"
+                  )
 
-              request = urllib.request.Request(
-                  telegram_url,
-                  data=data,
-                  method="POST"
+              pattern = re.compile(
+                  r'href="([^"]*/newsevents/pressreleases/[^"]+\.htm)"'
+                  r'[^>]*>(.*?)</a>',
+                  re.IGNORECASE | re.DOTALL
               )
 
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  print(response.read().decode())
+              matches = pattern.findall(page)
 
-              with open(state_file, "w", encoding="utf-8") as f:
-                  f.write(link)
+              if not matches:
+                  raise RuntimeError(
+                      "No Federal Reserve press releases found"
+                  )
 
-              print("New Federal Reserve news sent.")
+              link, raw_title = matches[0]
 
+              title = re.sub(r"<[^>]+>", "", raw_title)
+              title = html.unescape(title)
+              title = " ".join(title.split())
+
+              if link.startswith("/"):
+                  link = "https://www.federalreserve.gov" + link
+              elif not link.startswith("http"):
+                  link = urllib.parse.urljoin(page_url, link)
+
+              state_file = ".last_fed_news"
+              previous_link = ""
+
+              if os.path.exists(state_file):
+                  with open(
+                      state_file,
+                      "r",
+                      encoding="utf-8"
+                  ) as f:
+                      previous_link = f.read().strip()
+
+              if previous_link == link:
+                  print("No new Federal Reserve news.")
+
+              else:
+                  message = (
+                      "🇺🇸 Federal Reserve\n\n"
+                      f"📌 {title}\n\n"
+                      f"🔗 {link}\n\n"
+                      "📡 TriFlux 24/7 Financial Radar"
+                  )
+
+                  telegram_url = (
+                      "https://api.telegram.org/bot"
+                      + os.environ["BOT_TOKEN"]
+                      + "/sendMessage"
+                  )
+
+                  telegram_data = urllib.parse.urlencode({
+                      "chat_id": os.environ["CHAT_ID"],
+                      "text": message,
+                      "disable_web_page_preview": "true"
+                  }).encode()
+
+                  request = urllib.request.Request(
+                      telegram_url,
+                      data=telegram_data,
+                      method="POST"
+                  )
+
+                  with urllib.request.urlopen(
+                      request,
+                      timeout=30
+                  ) as response:
+                      print(response.read().decode())
+
+                  with open(
+                      state_file,
+                      "w",
+                      encoding="utf-8"
+                  ) as f:
+                      f.write(link)
+
+                  print("New Federal Reserve news sent.")
+
+          except Exception as e:
+              print(
+                  f"Federal Reserve step failed, "
+                  f"skipping this source: {e}"
+              )
           PY
-            - name: Fetch ECB latest news
+
+      # =========================
+      # European Central Bank
+      # =========================
+      - name: Fetch ECB latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
@@ -116,51 +153,75 @@ jobs:
           import urllib.parse
           import xml.etree.ElementTree as ET
 
-          feed_url = "https://www.ecb.europa.eu/rss/press.html"
-
           try:
-              data = None
+              feed_url = "https://www.ecb.europa.eu/rss/press.html"
+              feed_data = None
 
               for attempt in range(3):
                   try:
                       req = urllib.request.Request(
                           feed_url,
-                          headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
+                          headers={
+                              "User-Agent":
+                              "Mozilla/5.0 (compatible; TriFlux247/1.0)"
+                          }
                       )
 
-                      with urllib.request.urlopen(req, timeout=30) as response:
-                          data = response.read()
+                      with urllib.request.urlopen(
+                          req,
+                          timeout=30
+                      ) as response:
+                          feed_data = response.read()
 
                       break
 
                   except Exception as e:
-                      print(f"ECB attempt {attempt + 1} failed: {e}")
+                      print(
+                          f"ECB attempt {attempt + 1} failed: {e}"
+                      )
+
                       if attempt < 2:
                           time.sleep(5)
 
-              if data is None:
-                  print("ECB unavailable after 3 attempts. Skipping ECB this run.")
+              if feed_data is None:
+                  print(
+                      "ECB unavailable after 3 attempts. "
+                      "Skipping ECB this run."
+                  )
 
               else:
-                  root = ET.fromstring(data)
+                  root = ET.fromstring(feed_data)
                   items = root.findall(".//item")
 
                   if not items:
-                      raise RuntimeError("No ECB news items found")
+                      raise RuntimeError(
+                          "No ECB news items found"
+                      )
 
                   item = items[0]
 
-                  title = (item.findtext("title") or "").strip()
-                  link = (item.findtext("link") or "").strip()
+                  title = (
+                      item.findtext("title") or ""
+                  ).strip()
+
+                  link = (
+                      item.findtext("link") or ""
+                  ).strip()
 
                   if not title or not link:
-                      raise RuntimeError("ECB news item missing title or link")
+                      raise RuntimeError(
+                          "ECB news item missing title or link"
+                      )
 
                   state_file = ".last_ecb_news"
                   previous_link = ""
 
                   if os.path.exists(state_file):
-                      with open(state_file, "r", encoding="utf-8") as f:
+                      with open(
+                          state_file,
+                          "r",
+                          encoding="utf-8"
+                      ) as f:
                           previous_link = f.read().strip()
 
                   if previous_link == link:
@@ -192,17 +253,30 @@ jobs:
                           method="POST"
                       )
 
-                      with urllib.request.urlopen(request, timeout=30) as response:
+                      with urllib.request.urlopen(
+                          request,
+                          timeout=30
+                      ) as response:
                           print(response.read().decode())
 
-                      with open(state_file, "w", encoding="utf-8") as f:
+                      with open(
+                          state_file,
+                          "w",
+                          encoding="utf-8"
+                      ) as f:
                           f.write(link)
 
                       print("New ECB news sent.")
 
           except Exception as e:
-              print(f"ECB step failed, skipping this source: {e}")
+              print(
+                  f"ECB step failed, skipping this source: {e}"
+              )
           PY
+
+      # =========================
+      # Bank of Japan
+      # =========================
       - name: Fetch BOJ latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -210,102 +284,164 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
+          import time
           import urllib.request
           import urllib.parse
           import xml.etree.ElementTree as ET
 
-          feed_url = "https://www.boj.or.jp/en/rss/whatsnew.xml"
-          req = urllib.request.Request(
-              feed_url,
-              headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
-          )
+          try:
+              feed_url = "https://www.boj.or.jp/en/rss/whatsnew.xml"
+              feed_data = None
 
-          with urllib.request.urlopen(req, timeout=30) as response:
-              root = ET.fromstring(response.read())
+              for attempt in range(3):
+                  try:
+                      req = urllib.request.Request(
+                          feed_url,
+                          headers={
+                              "User-Agent":
+                              "Mozilla/5.0 (compatible; TriFlux247/1.0)"
+                          }
+                      )
 
-          items = root.findall(".//item")
-          if not items:
-              items = root.findall(".//{*}entry")
+                      with urllib.request.urlopen(
+                          req,
+                          timeout=30
+                      ) as response:
+                          feed_data = response.read()
 
-          if not items:
-              raise RuntimeError("No BOJ news items found")
-
-          item = items[0]
-          title_node = item.find("{*}title")
-          if title_node is None:
-              title_node = item.find("title")
-
-          title = (
-              "".join(title_node.itertext()).strip()
-              if title_node is not None else ""
-          )
-
-          link = (item.findtext("link") or "").strip()
-
-          if not link:
-              for node in item.findall("{*}link"):
-                  link = node.attrib.get("href", "")
-                  if link:
                       break
 
-          if not title or not link:
-              raise RuntimeError("BOJ news item missing title or link")
+                  except Exception as e:
+                      print(
+                          f"BOJ attempt {attempt + 1} failed: {e}"
+                      )
 
-          state_file = ".last_boj_news"
-          previous_link = ""
+                      if attempt < 2:
+                          time.sleep(5)
 
-          if os.path.exists(state_file):
-              with open(state_file, "r", encoding="utf-8") as f:
-                  previous_link = f.read().strip()
+              if feed_data is None:
+                  print(
+                      "BOJ unavailable after 3 attempts. "
+                      "Skipping BOJ this run."
+                  )
 
-          if previous_link == link:
-              print("No new BOJ news.")
-          else:
-              message = (
-                  "🇯🇵 Bank of Japan (BOJ)\n\n"
-                  f"📌 {title}\n\n"
-                  f"🔗 {link}\n\n"
-                  "📡 TriFlux 24/7 Financial Radar"
+              else:
+                  root = ET.fromstring(feed_data)
+
+                  items = root.findall(".//item")
+
+                  if not items:
+                      items = root.findall(".//{*}entry")
+
+                  if not items:
+                      raise RuntimeError(
+                          "No BOJ news items found"
+                      )
+
+                  item = items[0]
+
+                  title_node = item.find("{*}title")
+
+                  if title_node is None:
+                      title_node = item.find("title")
+
+                  title = (
+                      "".join(title_node.itertext()).strip()
+                      if title_node is not None
+                      else ""
+                  )
+
+                  link = (
+                      item.findtext("link") or ""
+                  ).strip()
+
+                  if not link:
+                      for node in item.findall("{*}link"):
+                          link = node.attrib.get("href", "")
+
+                          if link:
+                              break
+
+                  if not title or not link:
+                      raise RuntimeError(
+                          "BOJ news item missing title or link"
+                      )
+
+                  state_file = ".last_boj_news"
+                  previous_link = ""
+
+                  if os.path.exists(state_file):
+                      with open(
+                          state_file,
+                          "r",
+                          encoding="utf-8"
+                      ) as f:
+                          previous_link = f.read().strip()
+
+                  if previous_link == link:
+                      print("No new BOJ news.")
+
+                  else:
+                      message = (
+                          "🇯🇵 Bank of Japan (BOJ)\n\n"
+                          f"📌 {title}\n\n"
+                          f"🔗 {link}\n\n"
+                          "📡 TriFlux 24/7 Financial Radar"
+                      )
+
+                      telegram_url = (
+                          "https://api.telegram.org/bot"
+                          + os.environ["BOT_TOKEN"]
+                          + "/sendMessage"
+                      )
+
+                      telegram_data = urllib.parse.urlencode({
+                          "chat_id": os.environ["CHAT_ID"],
+                          "text": message,
+                          "disable_web_page_preview": "true"
+                      }).encode()
+
+                      request = urllib.request.Request(
+                          telegram_url,
+                          data=telegram_data,
+                          method="POST"
+                      )
+
+                      with urllib.request.urlopen(
+                          request,
+                          timeout=30
+                      ) as response:
+                          print(response.read().decode())
+
+                      with open(
+                          state_file,
+                          "w",
+                          encoding="utf-8"
+                      ) as f:
+                          f.write(link)
+
+                      print("New BOJ news sent.")
+
+          except Exception as e:
+              print(
+                  f"BOJ step failed, skipping this source: {e}"
               )
-
-              telegram_url = (
-                  "https://api.telegram.org/bot"
-                  + os.environ["BOT_TOKEN"]
-                  + "/sendMessage"
-              )
-
-              data = urllib.parse.urlencode({
-                  "chat_id": os.environ["CHAT_ID"],
-                  "text": message,
-                  "disable_web_page_preview": "true"
-              }).encode()
-
-              request = urllib.request.Request(
-                  telegram_url, data=data, method="POST"
-              )
-
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  print(response.read().decode())
-
-              with open(state_file, "w", encoding="utf-8") as f:
-                  f.write(link)
-
-              print("New BOJ news sent.")
           PY
-     
-          
+
+      # =========================
+      # Save state
+      # =========================
       - name: Save news state
         run: |
-          if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add .last_fed_news .last_ecb_news .last_boj_news
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-            if ! git diff --cached --quiet; then
-              git commit -m "Update news state"
-              git pull --rebase origin main
-              git push
-            else
-              echo "No state change."
-            fi
+          git add -A -- .last_fed_news .last_ecb_news .last_boj_news
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update news state"
+            git pull --rebase origin main
+            git push
+          else
+            echo "No state change."
           fi
