@@ -15,120 +15,162 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 def send_telegram(message):
     if not BOT_TOKEN:
-        print("Telegram skipped: TELEGRAM_BOT_TOKEN is missing.")
-        return False
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is not configured"
+        )
 
     if not CHAT_ID:
-        print("Telegram skipped: TELEGRAM_CHAT_ID is missing.")
-        return False
+        raise RuntimeError(
+            "TELEGRAM_CHAT_ID is not configured"
+        )
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    payload = urllib.parse.urlencode(
-        {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": "true",
-        }
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        method="POST",
+    url = (
+        "https://api.telegram.org/bot"
+        f"{BOT_TOKEN}/sendMessage"
     )
 
-    last_error = None
+    data = urllib.parse.urlencode({
+        "chat_id": CHAT_ID,
+        "text": message[:4000],
+        "disable_web_page_preview": "true",
+    }).encode("utf-8")
 
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                result = json.loads(response.read().decode("utf-8"))
-
-            if result.get("ok"):
-                return True
-
-            last_error = RuntimeError(
-                f"Telegram API returned: {result}"
+            request = urllib.request.Request(
+                url,
+                data=data,
+                method="POST",
             )
 
-        except (
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-            TimeoutError,
-            json.JSONDecodeError,
-        ) as exc:
-            last_error = exc
+            with urllib.request.urlopen(
+                request,
+                timeout=30,
+            ) as response:
+                result = json.loads(
+                    response.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
 
-        if attempt < 3:
-            time.sleep(2 ** attempt)
+            if not result.get("ok"):
+                raise RuntimeError(str(result))
 
-    print(f"Telegram send error: {last_error}")
-    return False
+            time.sleep(1.2)
+            return
+
+        except urllib.error.HTTPError as error:
+            if (
+                error.code == 429
+                and attempt < 3
+            ):
+                wait = 20 * (attempt + 1)
+
+                print(
+                    "Telegram rate limit; "
+                    f"waiting {wait}s..."
+                )
+
+                time.sleep(wait)
+                continue
+
+            raise
 
 
-def make_message(source, title, link, category="Financial Risk"):
-    safe_source = html.escape(str(source))
-    safe_title = html.escape(str(title))
-
-    clean_link = normalize_url(link)
-
+def make_message(
+    source,
+    flag,
+    title,
+    link,
+    details=None,
+):
     parts = [
-        f"<b>TriFlux 24/7 | {html.escape(str(category))}</b>",
+        f"{flag} {source}",
         "",
-        f"<b>{safe_title}</b>",
-        "",
-        f"Source: {safe_source}",
+        title,
     ]
 
-    if clean_link:
-        safe_link = html.escape(clean_link, quote=True)
-        parts.extend(
-            [
-                "",
-                f'<a href="{safe_link}">Open official source</a>',
-            ]
-        )
+    if details:
+        parts.extend([
+            "",
+            details,
+        ])
+
+    if link:
+        parts.extend([
+            "",
+            link,
+        ])
 
     return "\n".join(parts)
 
 
 def send_one(
     source,
+    flag,
     title,
     link,
     state_file,
     item_id=None,
-    category="Financial Risk",
+    details=None,
 ):
-    key = str(item_id or normalize_url(link) or title).strip()
+    link = normalize_url(link)
+    item_id = str(item_id or "").strip()
 
-    if not key:
-        print(f"{source}: skipped item with no usable ID.")
-        return False
+    state = read_state(state_file)
 
-    seen = read_state(state_file)
+    known = set(
+        state.get("ids", [])
+    )
 
-    if key in seen:
-        print(f"No new {source}; duplicate already recorded.")
+    identifiers = []
+
+    if item_id:
+        identifiers.append(item_id)
+
+    if link:
+        identifiers.append(link)
+
+    if (
+        state.get("initialized")
+        and identifiers
+        and any(
+            identifier in known
+            for identifier in identifiers
+        )
+    ):
+        print(
+            f"No new {source}; "
+            "duplicate already recorded."
+        )
         return False
 
     message = make_message(
-        source=source,
-        title=title,
-        link=link,
-        category=category,
+        source,
+        flag,
+        title,
+        link,
+        details=details,
     )
 
-    if not send_telegram(message):
-        return False
+    send_telegram(message)
 
-    updated = [key] + seen
-    write_state(state_file, updated)
+    updated = list(
+        state.get("ids", [])
+    )
 
-    print(f"Sent new {source}: {title}")
+    for identifier in identifiers:
+        if identifier not in updated:
+            updated.append(identifier)
+
+    write_state(
+        state_file,
+        updated,
+    )
+
+    print(
+        f"Sent new {source}: {title}"
+    )
+
     return True
