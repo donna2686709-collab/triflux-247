@@ -995,6 +995,16 @@ SEC_FORMS = [
             "and changes in business conditions"
         ),
     ),
+    (
+        "Form 10-K",
+        "10-K",
+        ".last_sec_10k",
+        (
+            "Annual financial report used to monitor "
+            "revenue, earnings, cash flow, balance sheet, "
+            "risk factors, and changes in business conditions"
+        ),
+    ),
 ]
 
 
