@@ -10,24 +10,16 @@ def normalize_url(url):
     if not url:
         return ""
 
-    url = url.strip()
+    url = str(url).strip()
 
     try:
         parsed = urllib.parse.urlsplit(url)
 
-        scheme = parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
-
-        path = parsed.path or "/"
-
-        if path != "/":
-            path = path.rstrip("/")
-
         return urllib.parse.urlunsplit(
             (
-                scheme,
-                netloc,
-                path,
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
                 parsed.query,
                 "",
             )
@@ -39,68 +31,104 @@ def normalize_url(url):
 
 def read_state(path):
     if not os.path.exists(path):
-        return []
+        return {
+            "initialized": False,
+            "ids": [],
+        }
 
     try:
-        with open(path, "r", encoding="utf-8") as file:
-            content = file.read().strip()
+        with open(
+            path,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            raw = file.read().strip()
 
-        if not content:
-            return []
+        if not raw:
+            return {
+                "initialized": False,
+                "ids": [],
+            }
 
         try:
-            data = json.loads(content)
+            data = json.loads(raw)
 
+            if (
+                isinstance(data, dict)
+                and isinstance(
+                    data.get("ids"),
+                    list,
+                )
+            ):
+                return {
+                    "initialized": bool(
+                        data.get(
+                            "initialized",
+                            True,
+                        )
+                    ),
+                    "ids": [
+                        str(item)
+                        for item in data["ids"]
+                        if item
+                    ],
+                }
+
+            # Compatibility with the temporary
+            # list format used during refactoring.
             if isinstance(data, list):
-                return [str(item) for item in data if item]
-
-            if isinstance(data, str):
-                return [data] if data else []
+                return {
+                    "initialized": True,
+                    "ids": [
+                        str(item)
+                        for item in data
+                        if item
+                    ],
+                }
 
         except json.JSONDecodeError:
             pass
 
-        return [
-            line.strip()
-            for line in content.splitlines()
-            if line.strip()
-        ]
+        return {
+            "initialized": True,
+            "ids": [
+                normalize_url(raw)
+            ],
+        }
 
-    except Exception as exc:
-        print(f"State read error ({path}): {exc}")
-        return []
+    except Exception:
+        return {
+            "initialized": False,
+            "ids": [],
+        }
 
 
-def write_state(path, items):
-    if isinstance(items, str):
-        items = [items]
+def write_state(path, ids):
+    unique = list(
+        dict.fromkeys(
+            str(item)
+            for item in ids
+            if item
+        )
+    )[-MAX_STATE_ITEMS:]
 
-    cleaned = []
-    seen = set()
+    temp_path = path + ".tmp"
 
-    for item in items:
-        if item is None:
-            continue
+    with open(
+        temp_path,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            {
+                "initialized": True,
+                "ids": unique,
+            },
+            file,
+            ensure_ascii=False,
+        )
 
-        value = str(item).strip()
-
-        if not value or value in seen:
-            continue
-
-        seen.add(value)
-        cleaned.append(value)
-
-    cleaned = cleaned[:MAX_STATE_ITEMS]
-
-    try:
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(
-                cleaned,
-                file,
-                ensure_ascii=False,
-                indent=2,
-            )
-
-    except Exception as exc:
-        print(f"State write error ({path}): {exc}")
-        raise
+    os.replace(
+        temp_path,
+        path,
+    )
