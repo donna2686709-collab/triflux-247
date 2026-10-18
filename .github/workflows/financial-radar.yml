@@ -266,7 +266,7 @@ jobs:
               print("New BOJ news sent.")
           PY
      
-          PY
+          
       - name: Save news state
         run: |
             if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ]; then            git config user.name "github-actions[bot]"
