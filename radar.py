@@ -27,8 +27,10 @@ def download(url, retries=3):
                 url,
                 headers={
                     "User-Agent": USER_AGENT,
-                    "Accept": "text/html,application/xhtml+xml,"
-                              "application/xml;q=0.9,*/*;q=0.8",
+                    "Accept": (
+                        "text/html,application/xhtml+xml,"
+                        "application/xml;q=0.9,*/*;q=0.8"
+                    ),
                     "Accept-Language": "en-US,en;q=0.9",
                 }
             )
@@ -205,8 +207,7 @@ def fetch_federal_reserve():
 
     except Exception as error:
         print(
-            f"Federal Reserve failed, skipping: "
-            f"{error}"
+            f"Federal Reserve failed, skipping: {error}"
         )
 
 
@@ -408,7 +409,6 @@ def fetch_boe():
 
 # ============================================================
 # U.S. Department of the Treasury
-# Diagnostic version
 # ============================================================
 
 def fetch_treasury():
@@ -426,97 +426,57 @@ def fetch_treasury():
         )
 
         print(
-            f"Treasury diagnostic: "
-            f"downloaded {len(raw_data)} bytes."
+            f"Treasury: downloaded "
+            f"{len(raw_data)} bytes."
         )
 
-        lower_page = page.lower()
+        # Treasury currently exposes article paths inside
+        # the page source, but not necessarily as normal
+        # href attributes. Search the complete source.
+        patterns = [
+            r'/news/press-releases/[A-Za-z]{1,10}[0-9]{2,10}',
+            r'\\/news\\/press-releases\\/'
+            r'[A-Za-z]{1,10}[0-9]{2,10}',
+        ]
 
-        print(
-            "Treasury diagnostic: "
-            "contains 'press releases' = "
-            f"{'press releases' in lower_page}"
-        )
+        article_paths = []
 
-        print(
-            "Treasury diagnostic: "
-            "contains '/news/press-releases/' = "
-            f"{'/news/press-releases/' in lower_page}"
-        )
-
-        print(
-            "Treasury diagnostic: "
-            "contains 'treasury international capital' = "
-            f"{'treasury international capital' in lower_page}"
-        )
-
-        links = re.findall(
-            r'href\s*=\s*["\']([^"\']+)["\']',
-            page,
-            flags=re.IGNORECASE
-        )
-
-        treasury_links = []
-
-        for link in links:
-            clean_link = html.unescape(
-                link
-            ).strip()
-
-            if (
-                "/news/press-releases/"
-                not in clean_link.lower()
-            ):
-                continue
-
-            if clean_link.startswith("/"):
-                clean_link = (
-                    "https://home.treasury.gov"
-                    + clean_link
-                )
-
-            elif not clean_link.startswith("http"):
-                clean_link = urllib.parse.urljoin(
-                    page_url,
-                    clean_link
-                )
-
-            clean_link = normalize_url(
-                clean_link
+        for pattern in patterns:
+            matches = re.findall(
+                pattern,
+                page,
+                flags=re.IGNORECASE
             )
 
-            if clean_link == normalize_url(
-                page_url
-            ):
-                continue
+            for path in matches:
+                path = path.replace("\\/", "/")
+                path = html.unescape(path)
+                path = path.rstrip("/")
 
-            if clean_link not in treasury_links:
-                treasury_links.append(
-                    clean_link
-                )
+                if path not in article_paths:
+                    article_paths.append(path)
 
         print(
-            "Treasury diagnostic: "
-            f"candidate links = "
-            f"{len(treasury_links)}"
+            f"Treasury: article paths found = "
+            f"{len(article_paths)}"
         )
 
-        if treasury_links:
-            print(
-                "Treasury diagnostic: "
-                f"first candidate = "
-                f"{treasury_links[0]}"
+        if not article_paths:
+            raise RuntimeError(
+                "No Treasury article paths found"
             )
 
-        if not treasury_links:
-            print(
-                "Treasury diagnostic: "
-                "No candidate article links found."
-            )
+        selected_path = article_paths[0]
 
-            return
+        selected_link = (
+            "https://home.treasury.gov"
+            + selected_path
+        )
 
-        selected_link = treasury_links[0]
+        print(
+            f"Treasury: selected article = "
+            f"{selected_link}"
+        )
 
         article_page = download(
             selected_link
@@ -580,8 +540,7 @@ def fetch_treasury():
             )
 
         print(
-            "Treasury diagnostic: "
-            f"title = {title}"
+            f"Treasury: title = {title}"
         )
 
         process_news(
