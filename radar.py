@@ -1,9 +1,9 @@
-
 import html
 import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -13,82 +13,148 @@ from datetime import datetime, timedelta, timezone
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-USER_AGENT = os.environ.get(
-    "SEC_USER_AGENT",
-    "TriFlux247/1.0 (contact: configure-SEC_USER_AGENT-in-GitHub)"
+SEC_USER_AGENT = os.environ.get(
+    "SEC_USER_AGENT", ""
 ).strip()
 
-REQUEST_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "application/rss+xml, application/atom+xml, application/json, application/xml, text/xml, text/html, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+GENERAL_USER_AGENT = (
+    "Mozilla/5.0 (compatible; TriFlux247/2.0)"
+)
 
 MAX_STATE_ITEMS = 500
 
 
 # ============================================================
-# Common functions
+# DOWNLOAD
 # ============================================================
 
-def download(url, retries=3):
+def download(url, retries=4, sec=False):
+    headers = {
+        "User-Agent": (
+            SEC_USER_AGENT
+            if sec and SEC_USER_AGENT
+            else GENERAL_USER_AGENT
+        ),
+        "Accept": (
+            "application/atom+xml, "
+            "application/rss+xml, "
+            "application/json, "
+            "application/xml, "
+            "text/xml, "
+            "text/html, */*"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
     last_error = None
 
-    for attempt in range(1, retries + 1):
+    for attempt in range(retries):
         try:
             request = urllib.request.Request(
                 url,
-                headers=REQUEST_HEADERS
+                headers=headers,
             )
 
             with urllib.request.urlopen(
-                request, timeout=30
+                request,
+                timeout=30,
             ) as response:
                 return response.read()
 
+        except urllib.error.HTTPError as error:
+            last_error = error
+
+            if (
+                error.code == 429
+                and attempt < retries - 1
+            ):
+                wait = 15 * (attempt + 1)
+
+                print(
+                    f"HTTP 429 for {url}; "
+                    f"waiting {wait}s..."
+                )
+
+                time.sleep(wait)
+                continue
+
+            raise
+
         except Exception as error:
             last_error = error
-            print(
-                f"Download attempt {attempt}/{retries} "
-                f"failed for {url}: {error}"
-            )
 
-            if attempt < retries:
-                time.sleep(3 * attempt)
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+                continue
+
+            raise
 
     raise last_error
 
 
+# ============================================================
+# TELEGRAM
+# ============================================================
+
 def send_telegram(message):
     url = (
-        f"https://api.telegram.org/bot"
+        "https://api.telegram.org/bot"
         f"{BOT_TOKEN}/sendMessage"
     )
 
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
-        "text": message,
+        "text": message[:4000],
         "disable_web_page_preview": "true",
     }).encode("utf-8")
 
-    request = urllib.request.Request(
-        url, data=data, method="POST"
-    )
-
-    with urllib.request.urlopen(
-        request, timeout=30
-    ) as response:
-        result = json.loads(
-            response.read().decode(
-                "utf-8", errors="replace"
+    for attempt in range(4):
+        try:
+            request = urllib.request.Request(
+                url,
+                data=data,
+                method="POST",
             )
-        )
 
-    if not result.get("ok"):
-        raise RuntimeError(
-            f"Telegram rejected the message: {result}"
-        )
+            with urllib.request.urlopen(
+                request,
+                timeout=30,
+            ) as response:
+                result = json.loads(
+                    response.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
 
+            if not result.get("ok"):
+                raise RuntimeError(str(result))
+
+            # Avoid Telegram bursts
+            time.sleep(1.2)
+            return
+
+        except urllib.error.HTTPError as error:
+            if (
+                error.code == 429
+                and attempt < 3
+            ):
+                wait = 20 * (attempt + 1)
+
+                print(
+                    "Telegram rate limit; "
+                    f"waiting {wait}s..."
+                )
+
+                time.sleep(wait)
+                continue
+
+            raise
+
+
+# ============================================================
+# STATE / DEDUPLICATION
+# ============================================================
 
 def normalize_url(url):
     url = (url or "").strip()
@@ -107,31 +173,44 @@ def normalize_url(url):
     ))
 
 
-def read_state(state_file):
-    """Read JSON state; support old single-link state files."""
-
-    if not os.path.exists(state_file):
-        return {"initialized": False, "ids": []}
+def read_state(path):
+    if not os.path.exists(path):
+        return {
+            "initialized": False,
+            "ids": [],
+        }
 
     try:
         with open(
-            state_file, "r", encoding="utf-8"
+            path,
+            "r",
+            encoding="utf-8",
         ) as file:
             raw = file.read().strip()
 
         if not raw:
-            return {"initialized": False, "ids": []}
+            return {
+                "initialized": False,
+                "ids": [],
+            }
 
+        # New JSON state format
         try:
             data = json.loads(raw)
 
             if (
                 isinstance(data, dict)
-                and isinstance(data.get("ids"), list)
+                and isinstance(
+                    data.get("ids"),
+                    list,
+                )
             ):
                 return {
                     "initialized": bool(
-                        data.get("initialized", True)
+                        data.get(
+                            "initialized",
+                            True,
+                        )
                     ),
                     "ids": [
                         str(item)
@@ -143,371 +222,400 @@ def read_state(state_file):
         except json.JSONDecodeError:
             pass
 
-        # Legacy state stored one URL as plain text.
+        # Old TriFlux state files contained
+        # one URL only. Keep them compatible.
         return {
             "initialized": True,
-            "ids": [normalize_url(raw)],
+            "ids": [
+                normalize_url(raw)
+            ],
         }
 
-    except OSError as error:
-        print(
-            f"Could not read state file "
-            f"{state_file}: {error}"
+    except Exception:
+        return {
+            "initialized": False,
+            "ids": [],
+        }
+
+
+def write_state(path, ids):
+    unique = list(
+        dict.fromkeys(
+            str(item)
+            for item in ids
+            if item
         )
+    )[-MAX_STATE_ITEMS:]
 
-        return {"initialized": False, "ids": []}
-
-
-def write_state(state_file, ids, initialized=True):
-    unique_ids = list(dict.fromkeys(
-        str(item) for item in ids if item
-    ))[-MAX_STATE_ITEMS:]
-
-    temp_file = state_file + ".tmp"
+    temp_path = path + ".tmp"
 
     with open(
-        temp_file, "w", encoding="utf-8"
+        temp_path,
+        "w",
+        encoding="utf-8",
     ) as file:
         json.dump(
             {
-                "initialized": initialized,
-                "ids": unique_ids,
+                "initialized": True,
+                "ids": unique,
             },
             file,
             ensure_ascii=False,
         )
 
-    os.replace(temp_file, state_file)
+    os.replace(
+        temp_path,
+        path,
+    )
 
+
+# ============================================================
+# MESSAGE
+# ============================================================
 
 def make_message(
-    source_name, flag, title, link, details=None
+    source,
+    flag,
+    title,
+    link,
+    details="",
 ):
-    lines = [
-        f"{flag} {source_name}",
+    parts = [
+        f"{flag} {source}",
         "",
         f"📌 {title}",
     ]
 
     if details:
-        lines.extend(["", details])
+        parts.extend([
+            "",
+            details,
+        ])
 
-    lines.extend([
+    parts.extend([
         "",
         f"🔗 {link}",
         "",
         "📡 TriFlux 24/7 Financial Radar",
     ])
 
-    return "\n".join(lines)
+    return "\n".join(parts)
 
 
-def process_news(
-    source_name,
+def send_one(
+    source,
     flag,
     title,
     link,
     state_file,
-    details=None,
     item_id=None,
+    details="",
 ):
+    link = normalize_url(link)
+
     title = " ".join(
-        html.unescape(str(title or "")).split()
+        html.unescape(
+            str(title or "")
+        ).split()
     )
 
-    link = normalize_url(link)
-    stable_id = str(item_id or link)
+    stable_id = str(
+        item_id or link
+    )
 
-    if not title or not link or not stable_id:
-        raise RuntimeError(
-            f"{source_name}: missing title, link, or ID"
-        )
+    if (
+        not title
+        or not link
+        or not stable_id
+    ):
+        return False
 
-    state = read_state(state_file)
-    known = state["ids"]
+    state = read_state(
+        state_file
+    )
 
-    if stable_id in known or link in known:
+    if (
+        stable_id in state["ids"]
+        or link in state["ids"]
+    ):
         print(
-            f"No new {source_name}; duplicate already "
-            f"recorded: {stable_id}"
+            f"No new {source}; "
+            "duplicate already recorded."
         )
         return False
 
-    message = make_message(
-        source_name,
-        flag,
-        title,
-        link,
-        details,
+    send_telegram(
+        make_message(
+            source,
+            flag,
+            title,
+            link,
+            details,
+        )
     )
-
-    # Send before recording the state.
-    send_telegram(message)
 
     write_state(
         state_file,
-        known + [stable_id, link],
+        state["ids"]
+        + [
+            stable_id,
+            link,
+        ],
     )
 
-    print(f"New {source_name} message sent: {title}")
+    print(
+        f"New {source} message sent: "
+        f"{title}"
+    )
 
     return True
 
 
-def extract_item_link(item, base_url):
-    link = (
-        item.findtext("link") or ""
-    ).strip()
-
-    if not link:
-        for node in item.findall("{*}link"):
-            rel = node.attrib.get("rel", "alternate")
-
-            if rel in ("alternate", ""):
-                link = (
-                    node.attrib.get("href", "")
-                    or node.attrib.get("url", "")
-                ).strip()
-
-                if link:
-                    break
-
-    if not link:
-        guid = (
-            item.findtext("guid") or ""
-        ).strip()
-
-        if guid.startswith("http"):
-            link = guid
-
-    return (
-        urllib.parse.urljoin(base_url, link)
-        if link else ""
-    )
-
+# ============================================================
+# XML / RSS HELPERS
+# ============================================================
 
 def item_title(item):
-    node = item.find("{*}title")
+    node = item.find(
+        "{*}title"
+    )
 
-    if node is not None:
-        return " ".join(
-            "".join(node.itertext()).split()
+    if node is None:
+        node = item.find(
+            "title"
         )
 
+    if node is None:
+        return ""
+
     return " ".join(
-        (item.findtext("title") or "").split()
+        "".join(
+            node.itertext()
+        ).split()
     )
 
 
-def item_identity(item, link):
-    for tag in ("id", "guid"):
+def item_link(item, base):
+    nodes = (
+        item.findall("{*}link")
+        + item.findall("link")
+    )
+
+    for node in nodes:
+        href = node.attrib.get(
+            "href",
+            "",
+        ).strip()
+
+        if href:
+            return normalize_url(
+                urllib.parse.urljoin(
+                    base,
+                    href,
+                )
+            )
+
+        if (
+            node.text
+            and node.text.strip().startswith(
+                "http"
+            )
+        ):
+            return normalize_url(
+                node.text.strip()
+            )
+
+    text = (
+        item.findtext("link")
+        or ""
+    ).strip()
+
+    if text:
+        return normalize_url(
+            urllib.parse.urljoin(
+                base,
+                text,
+            )
+        )
+
+    guid = (
+        item.findtext("guid")
+        or ""
+    ).strip()
+
+    if guid.startswith("http"):
+        return normalize_url(
+            guid
+        )
+
+    return ""
+
+
+def item_id(item, link):
+    for tag in (
+        "{*}id",
+        "id",
+        "guid",
+    ):
         value = (
-            item.findtext(tag) or ""
+            item.findtext(tag)
+            or ""
         ).strip()
 
         if value:
             return value
 
-    return normalize_url(link)
+    return link
 
 
-def fetch_rss_source(
-    source_name,
+# ============================================================
+# EXISTING RSS SOURCES
+#
+# IMPORTANT:
+# Existing TriFlux sources inspect only the newest item.
+# This deliberately preserves the old state-file behaviour
+# and prevents another historical-news flood.
+# ============================================================
+
+def fetch_latest_feed(
+    source,
     flag,
-    feed_url,
+    url,
     state_file,
-    max_items=30,
 ):
     try:
-        root = ET.fromstring(download(feed_url))
+        root = ET.fromstring(
+            download(url)
+        )
 
         items = (
             root.findall(".//item")
-            or root.findall(".//{*}entry")
+            or root.findall(
+                ".//{*}entry"
+            )
         )
 
         if not items:
             raise RuntimeError(
-                f"No RSS/Atom entries found at {feed_url}"
+                "No feed entries found"
             )
 
-        entries = []
+        item = items[0]
 
-        for item in items[:max_items]:
-            title = item_title(item)
-            link = normalize_url(
-                extract_item_link(item, feed_url)
-            )
+        title = item_title(
+            item
+        )
 
-            if title and link:
-                entries.append((
-                    item_identity(item, link),
-                    title,
-                    link,
-                ))
+        link = item_link(
+            item,
+            url,
+        )
 
-        if not entries:
+        if not title or not link:
             raise RuntimeError(
-                f"No usable entries found at {feed_url}"
+                "Newest feed entry "
+                "has no title/link"
             )
 
-        state = read_state(state_file)
-
-        if not state["initialized"]:
-            seed = []
-
-            for identity, _title, link in entries:
-                seed.extend([identity, link])
-
-            write_state(state_file, seed)
-
-            print(
-                f"{source_name}: initialized baseline "
-                f"with {len(entries)} existing entries; "
-                "no historical messages sent."
-            )
-
-            return
-
-        known = set(state["ids"])
-
-        new_entries = [
-            (identity, title, link)
-            for identity, title, link in entries
-            if identity not in known and link not in known
-        ]
-
-        if not new_entries:
-            print(f"No new {source_name} news.")
-            return
-
-        # Feeds are normally newest first.
-        # Send older unseen items before newer ones.
-        for identity, title, link in reversed(new_entries):
-            process_news(
-                source_name,
-                flag,
-                title,
+        send_one(
+            source,
+            flag,
+            title,
+            link,
+            state_file,
+            item_id=item_id(
+                item,
                 link,
-                state_file,
-                item_id=identity,
-            )
+            ),
+        )
 
     except Exception as error:
         print(
-            f"{source_name} failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
 
 
 # ============================================================
-# Existing sources: central banks, Treasury, SEC, BLS, BEA
+# FEDERAL RESERVE
 # ============================================================
 
 def fetch_federal_reserve():
+    source = "Federal Reserve"
+
     try:
-        year = datetime.now(timezone.utc).year
+        year = datetime.now(
+            timezone.utc
+        ).year
 
-        page_url = (
+        url = (
             "https://www.federalreserve.gov/"
-            f"newsevents/pressreleases/{year}-press.htm"
+            "newsevents/pressreleases/"
+            f"{year}-press.htm"
         )
 
-        page = download(page_url).decode(
-            "utf-8", errors="ignore"
+        page = download(
+            url
+        ).decode(
+            "utf-8",
+            errors="ignore",
         )
 
-        pattern = re.compile(
-            r'href=["\']([^"\']*/newsevents/'
-            r'pressreleases/[^"\']+\.htm)["\']'
-            r'[^>]*>(.*?)</a>',
+        matches = re.findall(
+            r'href=["\']'
+            r'([^"\']*/newsevents/'
+            r'pressreleases/'
+            r'[^"\']+\.htm)'
+            r'["\'][^>]*>'
+            r'(.*?)</a>',
+            page,
             re.I | re.S,
         )
 
-        matches = pattern.findall(page)
-
         if not matches:
             raise RuntimeError(
-                "No Federal Reserve press releases found"
+                "No Federal Reserve "
+                "press releases found"
             )
 
-        entries = []
+        link, raw_title = (
+            matches[0]
+        )
 
-        for link, raw_title in matches:
-            title = " ".join(
-                html.unescape(
-                    re.sub(r"<[^>]+>", " ", raw_title)
-                ).split()
-            )
+        title = " ".join(
+            html.unescape(
+                re.sub(
+                    r"<[^>]+>",
+                    " ",
+                    raw_title,
+                )
+            ).split()
+        )
 
-            full_link = urllib.parse.urljoin(
-                page_url, link
-            )
-
-            if title and full_link:
-                entries.append((title, full_link))
-
-        fetch_html_latest_list(
-            "Federal Reserve",
+        send_one(
+            source,
             "🇺🇸",
-            entries,
+            title,
+            urllib.parse.urljoin(
+                url,
+                link,
+            ),
             ".last_fed_news",
         )
 
     except Exception as error:
         print(
-            f"Federal Reserve failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
 
 
-def fetch_html_latest_list(
-    source_name, flag, entries, state_file
-):
-    if not entries:
-        raise RuntimeError(
-            f"{source_name}: no usable entries"
-        )
-
-    state = read_state(state_file)
-
-    if not state["initialized"]:
-        title, link = entries[0]
-
-        write_state(
-            state_file,
-            [normalize_url(link)],
-        )
-
-        print(
-            f"{source_name}: initialized baseline; "
-            "no historical message sent."
-        )
-
-        return
-
-    known = set(state["ids"])
-
-    new_entries = [
-        (title, normalize_url(link))
-        for title, link in entries[:30]
-        if normalize_url(link) not in known
-    ]
-
-    if not new_entries:
-        print(f"No new {source_name} news.")
-        return
-
-    for title, link in reversed(new_entries):
-        process_news(
-            source_name,
-            flag,
-            title,
-            link,
-            state_file,
-        )
-
+# ============================================================
+# ECB
+# ============================================================
 
 def fetch_ecb():
-    fetch_rss_source(
+    fetch_latest_feed(
         "European Central Bank (ECB)",
         "🇪🇺",
         "https://www.ecb.europa.eu/rss/press.html",
@@ -515,8 +623,12 @@ def fetch_ecb():
     )
 
 
+# ============================================================
+# BANK OF JAPAN
+# ============================================================
+
 def fetch_boj():
-    fetch_rss_source(
+    fetch_latest_feed(
         "Bank of Japan (BOJ)",
         "🇯🇵",
         "https://www.boj.or.jp/en/rss/whatsnew.xml",
@@ -524,147 +636,228 @@ def fetch_boj():
     )
 
 
+# ============================================================
+# BANK OF ENGLAND
+# ============================================================
+
 def fetch_boe():
+    source = (
+        "Bank of England (BoE)"
+    )
+
     try:
-        page_url = (
-            "https://www.bankofengland.co.uk/news"
-            "?Direction=Latest&InfiniteScrolling=False"
+        url = (
+            "https://www.bankofengland.co.uk/"
+            "news?Direction=Latest"
+            "&InfiniteScrolling=False"
         )
 
-        page = download(page_url).decode(
-            "utf-8", errors="ignore"
+        page = download(
+            url
+        ).decode(
+            "utf-8",
+            errors="ignore",
         )
+
+        candidates = []
 
         matches = re.findall(
-            r'href=["\']([^"\']+)["\']'
-            r'[^>]*>(.*?)</a>',
+            r'href=["\']([^"\']+)'
+            r'["\'][^>]*>(.*?)</a>',
             page,
             re.I | re.S,
         )
 
-        entries = []
-
-        for link, raw_title in matches:
-            if "/news/" not in link.lower():
+        for link, raw in matches:
+            if (
+                "/news/"
+                not in link.lower()
+            ):
                 continue
 
             title = " ".join(
                 html.unescape(
-                    re.sub(r"<[^>]+>", " ", raw_title)
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        raw,
+                    )
                 ).split()
             )
 
             if len(title) >= 15:
-                entries.append((
-                    title,
-                    urllib.parse.urljoin(page_url, link),
-                ))
+                candidates.append(
+                    (
+                        title,
+                        urllib.parse.urljoin(
+                            url,
+                            link,
+                        ),
+                    )
+                )
 
-        fetch_html_latest_list(
-            "Bank of England (BoE)",
+        if not candidates:
+            raise RuntimeError(
+                "No BoE news found"
+            )
+
+        send_one(
+            source,
             "🇬🇧",
-            entries,
+            candidates[0][0],
+            candidates[0][1],
             ".last_boe_news",
         )
 
     except Exception as error:
-        print(f"BoE failed, skipping: {error}")
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
+
+
+# ============================================================
+# TREASURY
+# ============================================================
+
+def extract_page_title(page):
+    patterns = [
+        (
+            r'<meta[^>]+'
+            r'property=["\']og:title["\']'
+            r'[^>]+content=["\']'
+            r'([^"\']+)'
+        ),
+        (
+            r'<meta[^>]+'
+            r'content=["\']([^"\']+)'
+            r'["\'][^>]+'
+            r'property=["\']og:title["\']'
+        ),
+        r'<h1[^>]*>(.*?)</h1>',
+        r'<title[^>]*>(.*?)</title>',
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            page,
+            re.I | re.S,
+        )
+
+        if match:
+            title = " ".join(
+                html.unescape(
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        match.group(1),
+                    )
+                ).split()
+            )
+
+            if title:
+                return title
+
+    return ""
 
 
 def fetch_treasury():
+    source = (
+        "U.S. Department "
+        "of the Treasury"
+    )
+
     try:
-        page_url = (
+        url = (
             "https://home.treasury.gov/"
             "news/press-releases"
         )
 
-        page = download(page_url).decode(
-            "utf-8", errors="ignore"
+        page = download(
+            url
+        ).decode(
+            "utf-8",
+            errors="ignore",
         )
 
         paths = []
 
-        for path in re.findall(
-            r'/news/press-releases/[A-Za-z]{1,10}[0-9]{2,10}',
+        matches = re.findall(
+            r'/news/press-releases/'
+            r'[A-Za-z]{1,10}[0-9]{2,10}',
             page,
             re.I,
-        ):
+        )
+
+        for path in matches:
             if path not in paths:
                 paths.append(path)
 
         if not paths:
             raise RuntimeError(
-                "No Treasury article paths found"
+                "No Treasury release found"
             )
 
-        entries = []
+        link = urllib.parse.urljoin(
+            "https://home.treasury.gov",
+            paths[0],
+        )
 
-        for path in paths[:30]:
-            link = urllib.parse.urljoin(
-                "https://home.treasury.gov", path
+        article = download(
+            link
+        ).decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        title = extract_page_title(
+            article
+        )
+
+        if not title:
+            raise RuntimeError(
+                "Treasury title not found"
             )
 
-            article = download(link).decode(
-                "utf-8", errors="ignore"
-            )
-
-            title = ""
-
-            patterns = [
-                r'<meta[^>]+property=["\']og:title["\']'
-                r'[^>]+content=["\']([^"\']+)',
-
-                r'<meta[^>]+content=["\']([^"\']+)'
-                r'["\'][^>]+property=["\']og:title["\']',
-
-                r'<h1[^>]*>(.*?)</h1>',
-                r'<title[^>]*>(.*?)</title>',
-            ]
-
-            for pattern in patterns:
-                match = re.search(
-                    pattern, article, re.I | re.S
-                )
-
-                if match:
-                    title = " ".join(
-                        html.unescape(
-                            re.sub(
-                                r"<[^>]+>",
-                                " ",
-                                match.group(1),
-                            )
-                        ).split()
-                    )
-
-                    if title:
-                        break
-
-            if title:
-                entries.append((title, link))
-
-        fetch_html_latest_list(
-            "U.S. Department of the Treasury",
+        send_one(
+            source,
             "🇺🇸",
-            entries,
+            title,
+            link,
             ".last_treasury_news",
         )
 
     except Exception as error:
-        print(f"Treasury failed, skipping: {error}")
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
+
+# ============================================================
+# SEC NEWS
+# ============================================================
 
 def fetch_sec_news():
-    fetch_rss_source(
-        "U.S. Securities and Exchange Commission (SEC) News",
+    fetch_latest_feed(
+        (
+            "U.S. Securities and "
+            "Exchange Commission "
+            "(SEC) News"
+        ),
         "🇺🇸",
         "https://www.sec.gov/news/pressreleases.rss",
         ".last_sec_news",
     )
 
 
+# ============================================================
+# BLS
+# ============================================================
+
 def fetch_bls_employment():
-    fetch_rss_source(
+    fetch_latest_feed(
         "BLS Employment Situation",
         "🇺🇸",
         "https://www.bls.gov/feed/empsit.rss",
@@ -673,8 +866,11 @@ def fetch_bls_employment():
 
 
 def fetch_bls_cpi():
-    fetch_rss_source(
-        "BLS Consumer Price Index (CPI)",
+    fetch_latest_feed(
+        (
+            "BLS Consumer Price "
+            "Index (CPI)"
+        ),
         "🇺🇸",
         "https://www.bls.gov/feed/cpi.rss",
         ".last_bls_cpi",
@@ -682,8 +878,11 @@ def fetch_bls_cpi():
 
 
 def fetch_bls_ppi():
-    fetch_rss_source(
-        "BLS Producer Price Index (PPI)",
+    fetch_latest_feed(
+        (
+            "BLS Producer Price "
+            "Index (PPI)"
+        ),
         "🇺🇸",
         "https://www.bls.gov/feed/ppi.rss",
         ".last_bls_ppi",
@@ -691,171 +890,187 @@ def fetch_bls_ppi():
 
 
 def fetch_bls_jolts():
-    fetch_rss_source(
-        "BLS Job Openings and Labor Turnover (JOLTS)",
+    fetch_latest_feed(
+        (
+            "BLS Job Openings and "
+            "Labor Turnover (JOLTS)"
+        ),
         "🇺🇸",
         "https://www.bls.gov/feed/jolts.rss",
         ".last_bls_jolts",
     )
 
 
+# ============================================================
+# BEA GDP / PCE
+# ============================================================
+
 def fetch_bea():
-    feed_url = "https://apps.bea.gov/rss/rss.xml"
+    source = "BEA GDP / PCE"
 
     try:
-        root = ET.fromstring(download(feed_url))
+        url = (
+            "https://apps.bea.gov/"
+            "rss/rss.xml"
+        )
+
+        root = ET.fromstring(
+            download(url)
+        )
 
         items = (
             root.findall(".//item")
-            or root.findall(".//{*}entry")
+            or root.findall(
+                ".//{*}entry"
+            )
         )
 
-        if not items:
-            raise RuntimeError("No BEA RSS items found")
+        keywords = (
+            "gross domestic product",
+            "gdp",
+            "personal income and outlays",
+            "personal consumption expenditures",
+            "pce price index",
+            "personal income",
+            "personal consumption",
+        )
 
-        keywords = {
-            "gdp": (
-                "gross domestic product",
-                "gdp",
-            ),
-            "pce": (
-                "personal income and outlays",
-                "personal consumption expenditures",
-                "pce price index",
-                "personal income",
-                "personal consumption",
-            ),
-        }
-
-        state_file = ".last_bea_news"
-        state = read_state(state_file)
-
-        # Migrate the previous BEA state files.
-        for legacy in (
-            ".last_bea_gdp",
-            ".last_bea_pce",
-        ):
-            if os.path.exists(legacy):
-                try:
-                    with open(
-                        legacy, "r", encoding="utf-8"
-                    ) as file:
-                        old = normalize_url(
-                            file.read().strip()
-                        )
-
-                        if old and old not in state["ids"]:
-                            state["ids"].append(old)
-
-                except OSError:
-                    pass
-
-        entries = []
+        match = None
 
         for item in items:
-            title = item_title(item)
-
-            link = normalize_url(
-                extract_item_link(item, feed_url)
+            title = item_title(
+                item
             )
-
-            if not title or not link:
-                continue
 
             lower = title.lower()
 
-            categories = [
-                name
-                for name, terms in keywords.items()
-                if any(term in lower for term in terms)
-            ]
-
-            if not categories:
-                continue
-
-            name = (
-                "BEA GDP / PCE"
-                if len(categories) > 1
-                else (
-                    "BEA Gross Domestic Product (GDP)"
-                    if categories[0] == "gdp"
-                    else "BEA Personal Income, Outlays and PCE"
+            if any(
+                keyword in lower
+                for keyword in keywords
+            ):
+                link = item_link(
+                    item,
+                    url,
                 )
-            )
 
-            entries.append((
-                item_identity(item, link),
-                name,
-                title,
-                link,
-            ))
+                if link:
+                    match = (
+                        item,
+                        title,
+                        link,
+                    )
+                    break
 
-        if not entries:
+        if not match:
             print(
-                "No matching BEA GDP/PCE release found."
+                "No matching BEA "
+                "GDP/PCE release found."
             )
             return
 
-        if not state["initialized"]:
-            seed = []
+        item, title, link = match
 
-            for identity, _name, _title, link in entries:
-                seed.extend([identity, link])
-
-            write_state(state_file, seed)
-
-            print(
-                f"BEA: initialized baseline with "
-                f"{len(entries)} matching entries; "
-                "no historical messages sent."
-            )
-
-            return
-
-        known = set(state["ids"])
-
-        new_entries = [
-            entry for entry in entries
-            if entry[0] not in known
-            and entry[3] not in known
-        ]
-
-        if not new_entries:
-            print("No new BEA GDP/PCE news.")
-            return
-
-        for identity, name, title, link in reversed(new_entries):
-            process_news(
-                name,
-                "🇺🇸",
-                title,
+        send_one(
+            source,
+            "🇺🇸",
+            title,
+            link,
+            ".last_bea_news",
+            item_id=item_id(
+                item,
                 link,
-                state_file,
-                item_id=identity,
-            )
+            ),
+        )
 
     except Exception as error:
-        print(f"BEA failed, skipping: {error}")
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
 
 # ============================================================
-# New: SEC corporate filings (EDGAR Atom feeds)
+# SEC EDGAR FILINGS
 # ============================================================
 
-SEC_FORM_FEEDS = [
-    ("Form 4", "4", ".last_sec_form4", "内部人交易申报"),
-    ("Schedule 13D", "SC 13D", ".last_sec_13d", "重要股东持股披露"),
-    ("Schedule 13D/A", "SC 13D/A", ".last_sec_13da", "重要股东持股修订"),
-    ("Schedule 13G", "SC 13G", ".last_sec_13g", "重要股东持股披露"),
-    ("Schedule 13G/A", "SC 13G/A", ".last_sec_13ga", "重要股东持股修订"),
-    ("Form 8-K", "8-K", ".last_sec_8k", "企业重大事件申报"),
-    ("Form 13F-HR", "13F-HR", ".last_sec_13f", "机构季度持仓申报"),
-    ("Form 13F-HR/A", "13F-HR/A", ".last_sec_13fa", "机构季度持仓修订申报"),
+SEC_FORMS = [
+    (
+        "Form 4",
+        "4",
+        ".last_sec_form4",
+        (
+            "内部人持股变动申报；"
+            "仅凭 Form 4 本身不能一概"
+            "判断为买入或卖出"
+        ),
+    ),
+    (
+        "Schedule 13D",
+        "SCHEDULE 13D",
+        ".last_sec_13d",
+        (
+            "持股超过 5% 的"
+            "受益所有权披露"
+        ),
+    ),
+    (
+        "Schedule 13D/A",
+        "SCHEDULE 13D/A",
+        ".last_sec_13da",
+        "Schedule 13D 修订",
+    ),
+    (
+        "Schedule 13G",
+        "SCHEDULE 13G",
+        ".last_sec_13g",
+        (
+            "部分投资者持股超过 5% 的"
+            "受益所有权披露"
+        ),
+    ),
+    (
+        "Schedule 13G/A",
+        "SCHEDULE 13G/A",
+        ".last_sec_13ga",
+        "Schedule 13G 修订",
+    ),
+    (
+        "Form 8-K",
+        "8-K",
+        ".last_sec_8k",
+        (
+            "企业重大事件 "
+            "Current Report"
+        ),
+    ),
+    (
+        "Form 13F-HR",
+        "13F-HR",
+        ".last_sec_13f",
+        (
+            "机构季度持仓申报；"
+            "这是滞后披露，"
+            "不是实时交易"
+        ),
+    ),
+    (
+        "Form 13F-HR/A",
+        "13F-HR/A",
+        ".last_sec_13fa",
+        (
+            "机构季度持仓修订；"
+            "这是滞后披露，"
+            "不是实时交易"
+        ),
+    ),
 ]
 
 
-def fetch_sec_form_feed(
-    form_name, form_type, state_file, description
+def fetch_sec_form(
+    name,
+    form_type,
+    state_file,
+    description,
 ):
     try:
         query = urllib.parse.urlencode({
@@ -869,150 +1084,228 @@ def fetch_sec_form_feed(
             "output": "atom",
         })
 
-        feed_url = (
-            "https://www.sec.gov/cgi-bin/browse-edgar?"
+        url = (
+            "https://www.sec.gov/"
+            "cgi-bin/browse-edgar?"
             + query
         )
 
-        root = ET.fromstring(download(feed_url))
-
-        entries = (
-            root.findall(".//{*}entry")
-            or root.findall(".//entry")
+        root = ET.fromstring(
+            download(
+                url,
+                sec=True,
+            )
         )
 
-        if not entries:
-            raise RuntimeError(
-                f"No EDGAR Atom entries returned for {form_type}"
-            )
+        entries = root.findall(
+            ".//{*}entry"
+        )
 
         rows = []
 
-        for entry in entries[:40]:
-            title = item_title(entry)
-
-            link = normalize_url(
-                extract_item_link(entry, feed_url)
+        for entry in entries:
+            title = item_title(
+                entry
             )
 
-            identity = item_identity(entry, link)
+            link = item_link(
+                entry,
+                url,
+            )
 
-            if title and link and identity:
-                rows.append((identity, title, link))
+            stable_id = item_id(
+                entry,
+                link,
+            )
 
+            if (
+                title
+                and link
+                and stable_id
+            ):
+                rows.append(
+                    (
+                        stable_id,
+                        title,
+                        link,
+                    )
+                )
+
+        # An empty result is not treated as
+        # a fatal error. There simply may be
+        # no recent filing of that type.
         if not rows:
-            raise RuntimeError(
-                f"No usable EDGAR filings for {form_type}"
+            print(
+                f"SEC {name}: "
+                "no current filings returned; "
+                "nothing sent."
             )
+            return
 
-        state = read_state(state_file)
+        state = read_state(
+            state_file
+        )
 
+        # First successful run:
+        # record everything currently visible
+        # but DO NOT send historical filings.
         if not state["initialized"]:
             seed = []
 
-            for identity, _title, link in rows:
-                seed.extend([identity, link])
+            for (
+                stable_id,
+                _title,
+                link,
+            ) in rows:
+                seed.extend([
+                    stable_id,
+                    link,
+                ])
 
-            write_state(state_file, seed)
+            write_state(
+                state_file,
+                seed,
+            )
 
             print(
-                f"SEC {form_name}: initialized baseline "
-                f"with {len(rows)} current filings; "
-                "no historical flood."
+                f"SEC {name}: "
+                "initialized baseline with "
+                f"{len(rows)} current filings; "
+                "no historical messages sent."
             )
 
             return
 
-        known = set(state["ids"])
+        known = set(
+            state["ids"]
+        )
 
-        new_rows = [
-            (identity, title, link)
-            for identity, title, link in rows
-            if identity not in known and link not in known
+        unseen = [
+            row
+            for row in rows
+            if (
+                row[0] not in known
+                and row[2] not in known
+            )
         ]
 
-        if not new_rows:
-            print(f"No new SEC {form_name} filings.")
+        if not unseen:
+            print(
+                f"No new SEC "
+                f"{name} filings."
+            )
             return
 
-        for identity, title, link in reversed(new_rows):
+        # EDGAR feed is normally newest first.
+        # Send unseen filings oldest -> newest.
+        for (
+            stable_id,
+            title,
+            link,
+        ) in reversed(unseen):
+
             details = (
-                f"类型：{form_name}（{description}）\n"
-                "说明：以 SEC 原始申报为准；"
-                "申报本身不一定代表买入或卖出结论。"
+                f"类型：{name}\n"
+                f"说明：{description}\n"
+                "来源：SEC EDGAR 官方申报"
             )
 
-            process_news(
-                f"SEC {form_name}",
+            send_one(
+                f"SEC {name}",
                 "🇺🇸",
                 title,
                 link,
                 state_file,
+                item_id=stable_id,
                 details=details,
-                item_id=identity,
             )
 
     except Exception as error:
         print(
-            f"SEC {form_name} failed, skipping: {error}"
+            f"SEC {name} failed, "
+            f"skipping: {error}"
         )
 
 
-def fetch_sec_corporate_filings():
-    for (
-        form_name,
-        form_type,
-        state_file,
-        description,
-    ) in SEC_FORM_FEEDS:
-        fetch_sec_form_feed(
-            form_name,
-            form_type,
-            state_file,
-            description,
+def fetch_sec_filings():
+    if not SEC_USER_AGENT:
+        print(
+            "SEC filings skipped: "
+            "SEC_USER_AGENT "
+            "is not configured."
+        )
+        return
+
+    for row in SEC_FORMS:
+        fetch_sec_form(
+            *row
         )
 
-        # Avoid rapid request bursts to SEC.
-        time.sleep(0.25)
+        # Deliberately slow down SEC requests.
+        time.sleep(1.0)
 
 
 # ============================================================
-# New: New York Fed SOFR official market rate
+# NEW YORK FED SOFR
 # ============================================================
 
 def fetch_sofr():
+    source = (
+        "New York Fed SOFR"
+    )
+
     try:
-        today = datetime.now(timezone.utc).date()
-        start = today - timedelta(days=14)
+        end = datetime.now(
+            timezone.utc
+        ).date()
+
+        start = (
+            end
+            - timedelta(days=14)
+        )
 
         query = urllib.parse.urlencode({
-            "startDate": start.isoformat(),
-            "endDate": today.isoformat(),
+            "startDate": (
+                start.isoformat()
+            ),
+            "endDate": (
+                end.isoformat()
+            ),
         })
 
-        api_url = (
-            "https://markets.newyorkfed.org/api/rates/"
-            "secured/sofr/search.json?"
+        url = (
+            "https://markets.newyorkfed.org/"
+            "api/rates/secured/sofr/"
+            "search.json?"
             + query
         )
 
-        payload = json.loads(
-            download(api_url).decode(
-                "utf-8", errors="replace"
+        data = json.loads(
+            download(
+                url
+            ).decode(
+                "utf-8",
+                errors="replace",
             )
         )
 
-        rates = payload.get("refRates", [])
+        rates = (
+            data.get("refRates")
+            or []
+        )
 
         if not rates:
             raise RuntimeError(
-                "New York Fed SOFR API returned no rates "
-                "in the last 14 days"
+                "SOFR API returned "
+                "no observations"
             )
 
         rates.sort(
             key=lambda row: str(
-                row.get("effectiveDate", "")
+                row.get(
+                    "effectiveDate",
+                    "",
+                )
             ),
             reverse=True,
         )
@@ -1020,98 +1313,148 @@ def fetch_sofr():
         row = rates[0]
 
         effective_date = str(
-            row.get("effectiveDate", "unknown date")
+            row.get(
+                "effectiveDate",
+                "",
+            )
         )
 
         rate = row.get(
-            "percentRate",
-            row.get("percent_rate", "unknown"),
+            "percentRate"
         )
 
-        stable_id = f"SOFR:{effective_date}:{rate}"
+        if rate is None:
+            raise RuntimeError(
+                "SOFR response has "
+                "no percentRate"
+            )
+
+        stable_id = (
+            f"SOFR:"
+            f"{effective_date}:"
+            f"{rate}"
+        )
+
+        state_file = (
+            ".last_nyfed_sofr"
+        )
+
+        state = read_state(
+            state_file
+        )
+
+        # First successful SOFR run:
+        # create baseline only.
+        if not state["initialized"]:
+            write_state(
+                state_file,
+                [stable_id],
+            )
+
+            print(
+                "New York Fed SOFR: "
+                "initialized baseline "
+                f"{effective_date} "
+                f"{rate}%; "
+                "no historical message sent."
+            )
+
+            return
+
+        if stable_id in state["ids"]:
+            print(
+                "No new SOFR observation; "
+                f"latest is "
+                f"{effective_date} "
+                f"{rate}%."
+            )
+            return
 
         link = (
             "https://www.newyorkfed.org/"
             "markets/reference-rates/sofr"
         )
 
-        state_file = ".last_nyfed_sofr"
-        state = read_state(state_file)
-
-        if stable_id in state["ids"]:
-            print(
-                "No new SOFR observation; latest effective "
-                f"date is {effective_date}."
-            )
-            return
-
         details = (
             f"生效日期：{effective_date}\n"
             f"SOFR：{rate}%\n"
-            "来源：纽约联储官方参考利率。"
-            "SOFR 是隔夜担保融资参考利率，"
-            "不等同于股票资金流。"
+            "来源：Federal Reserve Bank "
+            "of New York 官方参考利率"
         )
 
-        send_telegram(
-            make_message(
-                "New York Fed SOFR",
-                "🇺🇸",
-                f"最新 SOFR：{rate}%（{effective_date}）",
-                link,
-                details,
-            )
-        )
-
-        write_state(
+        send_one(
+            source,
+            "🇺🇸",
+            (
+                f"SOFR {rate}%"
+                f"（{effective_date}）"
+            ),
+            link,
             state_file,
-            state["ids"] + [stable_id],
-        )
-
-        print(
-            f"New York Fed SOFR sent: "
-            f"{effective_date} {rate}%"
+            item_id=stable_id,
+            details=details,
         )
 
     except Exception as error:
         print(
-            f"New York Fed SOFR failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
 
 
 # ============================================================
-# Main
+# MAIN
 # ============================================================
 
 def main():
-    print("====================================")
-    print("TriFlux 24/7 Financial Radar")
     print(
-        "UTC scan time: "
-        f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}"
+        "===================================="
     )
-    print("====================================")
+    print(
+        "TriFlux 24/7 Financial Radar"
+    )
+    print(
+        "UTC scan time:",
+        datetime.now(
+            timezone.utc
+        ).isoformat(
+            timespec="seconds"
+        ),
+    )
+    print(
+        "===================================="
+    )
 
-    # Existing sources are preserved.
+    # Existing TriFlux sources
     fetch_federal_reserve()
     fetch_ecb()
     fetch_boj()
     fetch_boe()
     fetch_treasury()
     fetch_sec_news()
+
     fetch_bls_employment()
     fetch_bls_cpi()
     fetch_bls_ppi()
     fetch_bls_jolts()
+
     fetch_bea()
 
-    # New corporate filing and liquidity modules.
-    fetch_sec_corporate_filings()
+    # Wall Street / institutional monitoring
+    fetch_sec_filings()
+
+    # Market liquidity / funding conditions
     fetch_sofr()
 
-    print("====================================")
-    print("Radar scan complete.")
-    print("====================================")
+    print(
+        "===================================="
+    )
+    print(
+        "Radar scan complete."
+    )
+    print(
+        "===================================="
+    )
 
 
 if __name__ == "__main__":
