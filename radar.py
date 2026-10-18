@@ -143,6 +143,77 @@ def process_news(
     print(f"New {source_name} news sent.")
 
 
+def fetch_rss_source(
+    source_name,
+    flag,
+    feed_url,
+    state_file
+):
+    try:
+        feed_data = download(feed_url)
+
+        root = ET.fromstring(feed_data)
+
+        items = root.findall(".//item")
+
+        if not items:
+            items = root.findall(".//{*}entry")
+
+        if not items:
+            raise RuntimeError(
+                f"No {source_name} RSS items found"
+            )
+
+        item = items[0]
+
+        title = (
+            item.findtext("title") or ""
+        ).strip()
+
+        if not title:
+            title_node = item.find("{*}title")
+
+            if title_node is not None:
+                title = "".join(
+                    title_node.itertext()
+                ).strip()
+
+        link = (
+            item.findtext("link") or ""
+        ).strip()
+
+        if not link:
+            for node in item.findall("{*}link"):
+                link = node.attrib.get(
+                    "href",
+                    ""
+                )
+
+                if link:
+                    break
+
+        if not link:
+            guid = (
+                item.findtext("guid") or ""
+            ).strip()
+
+            if guid.startswith("http"):
+                link = guid
+
+        process_news(
+            source_name,
+            flag,
+            title,
+            link,
+            state_file
+        )
+
+    except Exception as error:
+        print(
+            f"{source_name} failed, skipping: {error}"
+        )
+
+
 # ============================================================
 # Federal Reserve
 # ============================================================
@@ -177,7 +248,12 @@ def fetch_federal_reserve():
 
         link, raw_title = matches[0]
 
-        title = re.sub(r"<[^>]+>", "", raw_title)
+        title = re.sub(
+            r"<[^>]+>",
+            "",
+            raw_title
+        )
+
         title = html.unescape(title)
 
         if link.startswith("/"):
@@ -211,41 +287,12 @@ def fetch_federal_reserve():
 # ============================================================
 
 def fetch_ecb():
-    try:
-        feed_url = (
-            "https://www.ecb.europa.eu/rss/press.html"
-        )
-
-        feed_data = download(feed_url)
-
-        root = ET.fromstring(feed_data)
-        items = root.findall(".//item")
-
-        if not items:
-            raise RuntimeError(
-                "No ECB news items found"
-            )
-
-        item = items[0]
-
-        title = (
-            item.findtext("title") or ""
-        ).strip()
-
-        link = (
-            item.findtext("link") or ""
-        ).strip()
-
-        process_news(
-            "European Central Bank (ECB)",
-            "🇪🇺",
-            title,
-            link,
-            ".last_ecb_news"
-        )
-
-    except Exception as error:
-        print(f"ECB failed, skipping: {error}")
+    fetch_rss_source(
+        "European Central Bank (ECB)",
+        "🇪🇺",
+        "https://www.ecb.europa.eu/rss/press.html",
+        ".last_ecb_news"
+    )
 
 
 # ============================================================
@@ -253,59 +300,12 @@ def fetch_ecb():
 # ============================================================
 
 def fetch_boj():
-    try:
-        feed_url = (
-            "https://www.boj.or.jp/en/rss/whatsnew.xml"
-        )
-
-        feed_data = download(feed_url)
-
-        root = ET.fromstring(feed_data)
-
-        items = root.findall(".//item")
-
-        if not items:
-            items = root.findall(".//{*}entry")
-
-        if not items:
-            raise RuntimeError(
-                "No BOJ news items found"
-            )
-
-        item = items[0]
-
-        title_node = item.find("{*}title")
-
-        if title_node is None:
-            title_node = item.find("title")
-
-        title = (
-            "".join(title_node.itertext()).strip()
-            if title_node is not None
-            else ""
-        )
-
-        link = (
-            item.findtext("link") or ""
-        ).strip()
-
-        if not link:
-            for node in item.findall("{*}link"):
-                link = node.attrib.get("href", "")
-
-                if link:
-                    break
-
-        process_news(
-            "Bank of Japan (BOJ)",
-            "🇯🇵",
-            title,
-            link,
-            ".last_boj_news"
-        )
-
-    except Exception as error:
-        print(f"BOJ failed, skipping: {error}")
+    fetch_rss_source(
+        "Bank of Japan (BOJ)",
+        "🇯🇵",
+        "https://www.boj.or.jp/en/rss/whatsnew.xml",
+        ".last_boj_news"
+    )
 
 
 # ============================================================
@@ -373,10 +373,7 @@ def fetch_boe():
             selected_title = title
             break
 
-        if (
-            not selected_link
-            or not selected_title
-        ):
+        if not selected_link or not selected_title:
             raise RuntimeError(
                 "No Bank of England news item found"
             )
@@ -390,7 +387,9 @@ def fetch_boe():
         )
 
     except Exception as error:
-        print(f"BoE failed, skipping: {error}")
+        print(
+            f"BoE failed, skipping: {error}"
+        )
 
 
 # ============================================================
@@ -404,9 +403,7 @@ def fetch_treasury():
             "news/press-releases"
         )
 
-        raw_data = download(page_url)
-
-        page = raw_data.decode(
+        page = download(page_url).decode(
             "utf-8",
             errors="ignore"
         )
@@ -439,11 +436,9 @@ def fetch_treasury():
                 "No Treasury article paths found"
             )
 
-        selected_path = article_paths[0]
-
         selected_link = (
             "https://home.treasury.gov"
-            + selected_path
+            + article_paths[0]
         )
 
         article_page = download(
@@ -466,12 +461,8 @@ def fetch_treasury():
                 r'([^"\']+)["\'][^>]+property=["\']'
                 r'og:title["\']'
             ),
-            (
-                r'<h1[^>]*>(.*?)</h1>'
-            ),
-            (
-                r'<title[^>]*>(.*?)</title>'
-            ),
+            r'<h1[^>]*>(.*?)</h1>',
+            r'<title[^>]*>(.*?)</title>',
         ]
 
         for pattern in title_patterns:
@@ -503,8 +494,7 @@ def fetch_treasury():
 
         if not title:
             raise RuntimeError(
-                "Treasury article found, "
-                "but title could not be extracted"
+                "Treasury article title not found"
             )
 
         process_news(
@@ -526,52 +516,52 @@ def fetch_treasury():
 # ============================================================
 
 def fetch_sec():
-    try:
-        feed_url = (
-            "https://www.sec.gov/news/pressreleases.rss"
-        )
+    fetch_rss_source(
+        "U.S. Securities and Exchange Commission (SEC)",
+        "🇺🇸",
+        "https://www.sec.gov/news/pressreleases.rss",
+        ".last_sec_news"
+    )
 
-        feed_data = download(feed_url)
 
-        root = ET.fromstring(feed_data)
+# ============================================================
+# U.S. Bureau of Labor Statistics
+# ============================================================
 
-        items = root.findall(".//item")
+def fetch_bls_employment():
+    fetch_rss_source(
+        "BLS Employment Situation",
+        "🇺🇸",
+        "https://www.bls.gov/feed/empsit.rss",
+        ".last_bls_employment"
+    )
 
-        if not items:
-            raise RuntimeError(
-                "No SEC press release items found"
-            )
 
-        item = items[0]
+def fetch_bls_cpi():
+    fetch_rss_source(
+        "BLS Consumer Price Index (CPI)",
+        "🇺🇸",
+        "https://www.bls.gov/feed/cpi.rss",
+        ".last_bls_cpi"
+    )
 
-        title = (
-            item.findtext("title") or ""
-        ).strip()
 
-        link = (
-            item.findtext("link") or ""
-        ).strip()
+def fetch_bls_ppi():
+    fetch_rss_source(
+        "BLS Producer Price Index (PPI)",
+        "🇺🇸",
+        "https://www.bls.gov/feed/ppi.rss",
+        ".last_bls_ppi"
+    )
 
-        if not link:
-            guid = (
-                item.findtext("guid") or ""
-            ).strip()
 
-            if guid.startswith("http"):
-                link = guid
-
-        process_news(
-            "U.S. Securities and Exchange Commission (SEC)",
-            "🇺🇸",
-            title,
-            link,
-            ".last_sec_news"
-        )
-
-    except Exception as error:
-        print(
-            f"SEC failed, skipping: {error}"
-        )
+def fetch_bls_jolts():
+    fetch_rss_source(
+        "BLS Job Openings and Labor Turnover (JOLTS)",
+        "🇺🇸",
+        "https://www.bls.gov/feed/jolts.rss",
+        ".last_bls_jolts"
+    )
 
 
 # ============================================================
@@ -589,6 +579,11 @@ def main():
     fetch_boe()
     fetch_treasury()
     fetch_sec()
+
+    fetch_bls_employment()
+    fetch_bls_cpi()
+    fetch_bls_ppi()
+    fetch_bls_jolts()
 
     print("====================================")
     print("Radar scan complete.")
