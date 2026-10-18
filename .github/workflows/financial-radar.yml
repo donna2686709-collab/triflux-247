@@ -265,15 +265,101 @@ jobs:
 
               print("New BOJ news sent.")
           PY
-      - name: Save news state
+            - name: Fetch IMF latest news
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -f .last_fed_news ] || [ -f .last_ecb_news ]; then
+          python3 - <<'PY'
+          import os
+          import re
+          import html
+          import urllib.request
+          import urllib.parse
+
+          page_url = "https://www.imf.org/en/news"
+
+          req = urllib.request.Request(
+              page_url,
+              headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
+          )
+
+          with urllib.request.urlopen(req, timeout=30) as response:
+              page = response.read().decode("utf-8", errors="ignore")
+
+          matches = re.findall(
+              r'href=["\']([^"\']*/en/news/articles/[^"\']+)["\'][^>]*>(.*?)</a>',
+              page,
+              flags=re.IGNORECASE | re.DOTALL
+          )
+
+          if not matches:
+              raise RuntimeError("No IMF news items found")
+
+          link, raw_title = matches[0]
+
+          if link.startswith("/"):
+              link = "https://www.imf.org" + link
+
+          title = re.sub(r"<[^>]+>", " ", raw_title)
+          title = html.unescape(title)
+          title = re.sub(r"\s+", " ", title).strip()
+
+          if not title or not link:
+              raise RuntimeError("IMF news item missing title or link")
+
+          state_file = ".last_imf_news"
+          previous_link = ""
+
+          if os.path.exists(state_file):
+              with open(state_file, "r", encoding="utf-8") as f:
+                  previous_link = f.read().strip()
+
+          if previous_link == link:
+              print("No new IMF news.")
+          else:
+              message = (
+                  "🌍 International Monetary Fund (IMF)\n\n"
+                  f"📌 {title}\n\n"
+                  f"🔗 {link}\n\n"
+                  "📡 TriFlux 24/7 Financial Radar"
+              )
+
+              telegram_url = (
+                  "https://api.telegram.org/bot"
+                  + os.environ["BOT_TOKEN"]
+                  + "/sendMessage"
+              )
+
+              data = urllib.parse.urlencode({
+                  "chat_id": os.environ["CHAT_ID"],
+                  "text": message,
+                  "disable_web_page_preview": "true"
+              }).encode()
+
+              request = urllib.request.Request(
+                  telegram_url,
+                  data=data,
+                  method="POST"
+              )
+
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print(response.read().decode())
+
+              with open(state_file, "w", encoding="utf-8") as f:
+                  f.write(link)
+
+              print("New IMF news sent.")
+          PY
+            - name: Save news state
+        run: |
+          if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ] || [ -f .last_imf_news ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add .last_fed_news .last_ecb_news .last_boj_news
+            git add .last_fed_news .last_ecb_news .last_boj_news .last_imf_news
 
             if ! git diff --cached --quiet; then
-              git commit -m "Update Federal Reserve news state"
+              git commit -m "Update news state"
               git pull --rebase origin main
               git push
             else
