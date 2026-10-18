@@ -19,7 +19,7 @@ jobs:
           import urllib.parse
           import xml.etree.ElementTree as ET
 
-          feed_url = "https://www.federalreserve.gov/feeds/press_all.xml"
+feed_url = "https://www.federalreserve.gov/feeds/press_all.xml?format=xml"
 
           req = urllib.request.Request(
               feed_url,
