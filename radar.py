@@ -9,6 +9,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
+from monitors.central_banks import (
+    fetch_federal_reserve,
+    fetch_ecb,
+    fetch_boj,
+    fetch_boe,
+)
+
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -500,6 +507,8 @@ def fetch_latest_feed(
             f"{source} failed, "
             f"skipping: {error}"
         )
+
+
 def fetch_cftc_cot_tff():
     source = "CFTC COT TFF"
     state_file = ".last_cftc_cot_tff"
@@ -641,162 +650,6 @@ def fetch_cftc_cot_tff():
             state_file,
             item_id=stable_id,
             details=details,
-        )
-
-    except Exception as error:
-        print(
-            f"{source} failed, "
-            f"skipping: {error}"
-        )
-
-def fetch_federal_reserve():
-    source = "Federal Reserve"
-
-    try:
-        year = datetime.now(
-            timezone.utc
-        ).year
-
-        url = (
-            "https://www.federalreserve.gov/"
-            "newsevents/pressreleases/"
-            f"{year}-press.htm"
-        )
-
-        page = download(
-            url
-        ).decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-        matches = re.findall(
-            r'href=["\']'
-            r'([^"\']*/newsevents/'
-            r'pressreleases/'
-            r'[^"\']+\.htm)'
-            r'["\'][^>]*>'
-            r'(.*?)</a>',
-            page,
-            re.I | re.S,
-        )
-
-        if not matches:
-            raise RuntimeError(
-                "No Federal Reserve "
-                "press releases found"
-            )
-
-        link, raw_title = matches[0]
-
-        title = " ".join(
-            html.unescape(
-                re.sub(
-                    r"<[^>]+>",
-                    " ",
-                    raw_title,
-                )
-            ).split()
-        )
-
-        send_one(
-            source,
-            "🇺🇸",
-            title,
-            urllib.parse.urljoin(
-                url,
-                link,
-            ),
-            ".last_fed_news",
-        )
-
-    except Exception as error:
-        print(
-            f"{source} failed, "
-            f"skipping: {error}"
-        )
-
-
-def fetch_ecb():
-    fetch_latest_feed(
-        "European Central Bank (ECB)",
-        "🇪🇺",
-        "https://www.ecb.europa.eu/rss/press.html",
-        ".last_ecb_news",
-    )
-
-
-def fetch_boj():
-    fetch_latest_feed(
-        "Bank of Japan (BOJ)",
-        "🇯🇵",
-        "https://www.boj.or.jp/en/rss/whatsnew.xml",
-        ".last_boj_news",
-    )
-
-
-def fetch_boe():
-    source = "Bank of England (BoE)"
-
-    try:
-        url = (
-            "https://www.bankofengland.co.uk/"
-            "news?Direction=Latest"
-            "&InfiniteScrolling=False"
-        )
-
-        page = download(
-            url
-        ).decode(
-            "utf-8",
-            errors="ignore",
-        )
-
-        candidates = []
-
-        matches = re.findall(
-            r'href=["\']([^"\']+)'
-            r'["\'][^>]*>(.*?)</a>',
-            page,
-            re.I | re.S,
-        )
-
-        for link, raw in matches:
-            if "/news/" not in link.lower():
-                continue
-
-            title = " ".join(
-                html.unescape(
-                    re.sub(
-                        r"<[^>]+>",
-                        " ",
-                        raw,
-                    )
-                ).split()
-            )
-
-            if len(title) >= 15:
-                candidates.append(
-                    (
-                        title,
-                        urllib.parse.urljoin(
-                            url,
-                            link,
-                        ),
-                    )
-                )
-
-        if not candidates:
-            raise RuntimeError(
-                "No BoE news found"
-            )
-
-        send_one(
-            source,
-            "🇬🇧",
-            candidates[0][0],
-            candidates[0][1],
-            ".last_boe_news",
         )
 
     except Exception as error:
@@ -1499,22 +1352,27 @@ def main():
         "===================================="
     )
 
+    # Global central bank monitoring
     fetch_federal_reserve()
     fetch_ecb()
     fetch_boj()
     fetch_boe()
+
+    # U.S. government and regulatory news
     fetch_treasury()
     fetch_sec_news()
 
+    # U.S. macroeconomic indicators
     fetch_bls_employment()
     fetch_bls_cpi()
     fetch_bls_ppi()
     fetch_bls_jolts()
-
     fetch_bea()
 
+    # SEC filing monitoring
     fetch_sec_filings()
 
+    # CFTC positioning and SOFR
     fetch_sofr()
 
     print(
