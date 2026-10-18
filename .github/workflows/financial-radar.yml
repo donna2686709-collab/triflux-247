@@ -265,7 +265,7 @@ jobs:
 
               print("New BOJ news sent.")
           PY
-            - name: Fetch IMF latest news
+      - name: Fetch IMF latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
@@ -351,7 +351,7 @@ jobs:
 
               print("New IMF news sent.")
           PY
-            - name: Save news state
+      - name: Save news state
         run: |
           if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ] || [ -f .last_imf_news ]; then
             git config user.name "github-actions[bot]"
