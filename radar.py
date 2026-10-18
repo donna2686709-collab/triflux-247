@@ -78,7 +78,6 @@ def send_telegram(message):
             "utf-8", errors="replace"
         )
 
-    # Telegram returns JSON with "ok": false on API errors.
     if '"ok": false' in result or '"ok":false' in result:
         raise RuntimeError(
             f"Telegram rejected the message: {result}"
@@ -132,13 +131,12 @@ def process_news(
         return
 
     message = (
-        f"{flag} {source_name}\n\n"
+        f"🇺🇸 {source_name}\n\n"
         f"📌 {title}\n\n"
         f"🔗 {link}\n\n"
         "📡 TriFlux 24/7 Financial Radar"
     )
 
-    # Send first. Only save the state after Telegram succeeds.
     send_telegram(message)
 
     with open(
@@ -400,10 +398,9 @@ def fetch_treasury():
                 "No Treasury article paths found"
             )
 
-        article_path = article_paths[0]
         article_link = urllib.parse.urljoin(
             "https://home.treasury.gov",
-            article_path,
+            article_paths[0],
         )
 
         article_page = download(
@@ -472,7 +469,7 @@ def fetch_sec():
 
 
 # ============================================================
-# 7. Bureau of Labor Statistics: Employment Situation
+# 7. BLS: Employment Situation
 # ============================================================
 
 def fetch_bls_employment():
@@ -485,7 +482,7 @@ def fetch_bls_employment():
 
 
 # ============================================================
-# 8. Bureau of Labor Statistics: CPI
+# 8. BLS: CPI
 # ============================================================
 
 def fetch_bls_cpi():
@@ -498,7 +495,7 @@ def fetch_bls_cpi():
 
 
 # ============================================================
-# 9. Bureau of Labor Statistics: PPI
+# 9. BLS: PPI
 # ============================================================
 
 def fetch_bls_ppi():
@@ -511,7 +508,7 @@ def fetch_bls_ppi():
 
 
 # ============================================================
-# 10. Bureau of Labor Statistics: JOLTS
+# 10. BLS: JOLTS
 # ============================================================
 
 def fetch_bls_jolts():
@@ -524,7 +521,7 @@ def fetch_bls_jolts():
 
 
 # ============================================================
-# 11. Bureau of Economic Analysis: GDP and PCE
+# 11. BEA: GDP and PCE
 # ============================================================
 
 def fetch_bea():
@@ -540,34 +537,43 @@ def fetch_bea():
             items = root.findall(".//{*}entry")
 
         if not items:
-            raise RuntimeError(
-                "No BEA RSS items found"
-            )
+            raise RuntimeError("No BEA RSS items found")
 
-        # Each category has its own saved link, so GDP and
-        # PCE can be tracked independently.
         categories = {
-            "gdp": {
-                "keywords": (
-                    "gross domestic product",
-                    "gdp",
-                ),
-                "state_file": ".last_bea_gdp",
-                "name": "BEA Gross Domestic Product (GDP)",
-            },
-            "pce": {
-                "keywords": (
-                    "personal income and outlays",
-                    "personal consumption expenditures",
-                    "pce price index",
-                    "personal income",
-                ),
-                "state_file": ".last_bea_pce",
-                "name": "BEA Personal Income, Outlays and PCE",
-            },
+            "gdp": (
+                "gross domestic product",
+                "gdp",
+            ),
+            "pce": (
+                "personal income and outlays",
+                "personal consumption expenditures",
+                "pce price index",
+                "personal income",
+                "personal consumption",
+            ),
         }
 
-        found = set()
+        # One shared state file prevents one BEA article
+        # from being sent once as GDP and again as PCE.
+        state_file = ".last_bea_news"
+
+        previous_links = set()
+
+        for filename in (
+            state_file,
+            ".last_bea_gdp",
+            ".last_bea_pce",
+        ):
+            if os.path.exists(filename):
+                with open(
+                    filename, "r", encoding="utf-8"
+                ) as file:
+                    saved_link = normalize_url(
+                        file.read().strip()
+                    )
+
+                    if saved_link:
+                        previous_links.add(saved_link)
 
         for item in items:
             title_node = item.find("{*}title")
@@ -584,39 +590,63 @@ def fetch_bea():
             if not title:
                 continue
 
-            link = extract_item_link(item, feed_url)
+            link = normalize_url(
+                extract_item_link(item, feed_url)
+            )
 
             if not link:
                 continue
 
             title_lower = title.lower()
 
-            for key, category in categories.items():
-                if key in found:
-                    continue
-
+            matched_categories = [
+                category
+                for category, keywords in categories.items()
                 if any(
                     keyword in title_lower
-                    for keyword in category["keywords"]
-                ):
-                    process_news(
-                        category["name"],
-                        "🇺🇸",
-                        title,
-                        link,
-                        category["state_file"],
-                    )
+                    for keyword in keywords
+                )
+            ]
 
-                    found.add(key)
+            if not matched_categories:
+                continue
 
-            if len(found) == len(categories):
-                break
+            # Already seen under either old category,
+            # or already processed by the shared state.
+            if link in previous_links:
+                with open(
+                    state_file, "w", encoding="utf-8"
+                ) as file:
+                    file.write(link)
 
-        if not found:
-            print(
-                "BEA RSS retrieved, but no matching "
-                "GDP/PCE release was found."
+                print(
+                    "No new BEA news; duplicate article "
+                    "already recorded."
+                )
+                return
+
+            if len(matched_categories) > 1:
+                source_name = "BEA GDP / PCE"
+            elif matched_categories[0] == "gdp":
+                source_name = (
+                    "BEA Gross Domestic Product (GDP)"
+                )
+            else:
+                source_name = (
+                    "BEA Personal Income, Outlays and PCE"
+                )
+
+            process_news(
+                source_name,
+                "🇺🇸",
+                title,
+                link,
+                state_file,
             )
+
+            return
+
+        print("No matching new BEA GDP/PCE release found.")
 
     except Exception as error:
         print(f"BEA failed, skipping: {error}")
