@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: financial-radar
+  cancel-in-progress: false
+
 jobs:
   radar:
     runs-on: ubuntu-latest
@@ -15,6 +19,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       # =========================
       # Federal Reserve
@@ -80,6 +86,7 @@ jobs:
 
               if previous_link == link:
                   print("No new Federal Reserve news.")
+
               else:
                   message = (
                       "🇺🇸 Federal Reserve\n\n"
@@ -153,11 +160,13 @@ jobs:
 
                   except Exception as e:
                       print(f"ECB attempt {attempt + 1} failed: {e}")
+
                       if attempt < 2:
                           time.sleep(5)
 
               if feed_data is None:
                   print("ECB unavailable. Skipping ECB this run.")
+
               else:
                   root = ET.fromstring(feed_data)
                   items = root.findall(".//item")
@@ -166,6 +175,7 @@ jobs:
                       raise RuntimeError("No ECB news items found")
 
                   item = items[0]
+
                   title = (item.findtext("title") or "").strip()
                   link = (item.findtext("link") or "").strip()
 
@@ -181,6 +191,7 @@ jobs:
 
                   if previous_link == link:
                       print("No new ECB news.")
+
                   else:
                       message = (
                           "🇪🇺 European Central Bank (ECB)\n\n"
@@ -254,15 +265,18 @@ jobs:
 
                   except Exception as e:
                       print(f"BOJ attempt {attempt + 1} failed: {e}")
+
                       if attempt < 2:
                           time.sleep(5)
 
               if feed_data is None:
                   print("BOJ unavailable. Skipping BOJ this run.")
+
               else:
                   root = ET.fromstring(feed_data)
 
                   items = root.findall(".//item")
+
                   if not items:
                       items = root.findall(".//{*}entry")
 
@@ -272,6 +286,7 @@ jobs:
                   item = items[0]
 
                   title_node = item.find("{*}title")
+
                   if title_node is None:
                       title_node = item.find("title")
 
@@ -286,6 +301,7 @@ jobs:
                   if not link:
                       for node in item.findall("{*}link"):
                           link = node.attrib.get("href", "")
+
                           if link:
                               break
 
@@ -301,6 +317,7 @@ jobs:
 
                   if previous_link == link:
                       print("No new BOJ news.")
+
                   else:
                       message = (
                           "🇯🇵 Bank of Japan (BOJ)\n\n"
@@ -383,6 +400,7 @@ jobs:
 
                   except Exception as e:
                       print(f"BoE attempt {attempt + 1} failed: {e}")
+
                       if attempt < 2:
                           time.sleep(5)
 
@@ -400,6 +418,7 @@ jobs:
                   selected_title = ""
 
                   for link, raw_title in matches:
+
                       if "/news/" not in link.lower():
                           continue
 
@@ -412,15 +431,30 @@ jobs:
 
                       if link.startswith("/"):
                           link = "https://www.bankofengland.co.uk" + link
+
                       elif not link.startswith("http"):
                           link = urllib.parse.urljoin(page_url, link)
+
+                      # Remove query strings and fragments so the same
+                      # article always has the same deduplication key.
+                      parsed = urllib.parse.urlsplit(link)
+
+                      link = urllib.parse.urlunsplit((
+                          parsed.scheme,
+                          parsed.netloc,
+                          parsed.path.rstrip("/"),
+                          "",
+                          ""
+                      ))
 
                       selected_link = link
                       selected_title = title
                       break
 
                   if not selected_link or not selected_title:
-                      raise RuntimeError("No Bank of England news item found")
+                      raise RuntimeError(
+                          "No Bank of England news item found"
+                      )
 
                   state_file = ".last_boe_news"
                   previous_link = ""
@@ -471,7 +505,7 @@ jobs:
           PY
 
       # =========================
-      # Save state
+      # Save news state
       # =========================
       - name: Save news state
         run: |
