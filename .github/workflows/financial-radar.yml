@@ -176,7 +176,7 @@ jobs:
 
               print("New ECB news sent.")
           PY
-            - name: Fetch BOJ latest news
+      - name: Fetch BOJ latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
