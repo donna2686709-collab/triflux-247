@@ -269,9 +269,11 @@ jobs:
           
       - name: Save news state
         run: |
-            if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ]; then            git config user.name "github-actions[bot]"
+          if [ -f .last_fed_news ] || [ -f .last_ecb_news ] || [ -f .last_boj_news ]; then
+            git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add .last_fed_news .last_ecb_news .last_boj_news
+
             if ! git diff --cached --quiet; then
               git commit -m "Update news state"
               git pull --rebase origin main
