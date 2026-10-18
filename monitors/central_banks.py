@@ -160,6 +160,7 @@ def fetch_boj():
         )
 
 
+
 def fetch_boe():
     source = "Bank of England (BoE)"
 
@@ -176,35 +177,73 @@ def fetch_boe():
         )
 
         candidates = []
+        seen = set()
 
         matches = re.findall(
-            r"""href=["']([^"']+)["'][^>]*>(.*?)</a>""",
+            r'<a\b[^>]*\bhref\s*=\s*["\']'
+            r'([^"\']+)["\'][^>]*>(.*?)</a>',
             page,
             re.I | re.S,
         )
 
-        for link, raw_title in matches:
-            if "/news/" not in link.lower():
+        ignored_titles = {
+            "events",
+            "news",
+            "read more",
+            "read more about this",
+            "home",
+            "search",
+            "menu",
+            "latest news",
+        }
+
+        for link, raw in matches:
+            link = html.unescape(link.strip())
+
+            absolute_link = urllib.parse.urljoin(
+                "https://www.bankofengland.co.uk/",
+                link,
+            )
+
+            path = urllib.parse.urlparse(
+                absolute_link
+            ).path.lower()
+
+            if "/news/" not in path:
                 continue
 
-            title = " ".join(
-                html.unescape(
-                    re.sub(
-                        r"<[^>]+>",
-                        " ",
-                        raw_title,
-                    )
-                ).split()
+            title = html.unescape(
+                re.sub(
+                    r"<[^>]+>",
+                    " ",
+                    raw,
+                )
             )
+
+            title = " ".join(title.split())
 
             if not title:
                 continue
 
-            candidates.append((link, title))
+            if title.casefold() in ignored_titles:
+                continue
+
+            if len(title) < 15:
+                continue
+
+            if absolute_link in seen:
+                continue
+
+            seen.add(absolute_link)
+
+            candidates.append(
+                (absolute_link, title)
+            )
 
         if not candidates:
             raise RuntimeError(
-                "No Bank of England news items found"
+                "No valid Bank of England news "
+                "headlines found"
             )
 
         link, title = candidates[0]
@@ -213,19 +252,12 @@ def fetch_boe():
             source,
             "🇬🇧",
             title,
-            urllib.parse.urljoin(url, link),
+            link,
             ".last_boe_news",
         )
 
     except Exception as error:
         print(
-            f"{source} failed, skipping: {error}"
+            f"{source} failed, "
+            f"skipping: {error}"
         )
-
-
-def fetch_central_banks():
-    """Fetch the latest news from four central banks."""
-    fetch_federal_reserve()
-    fetch_ecb()
-    fetch_boj()
-    fetch_boe()
