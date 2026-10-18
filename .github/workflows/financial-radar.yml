@@ -37,7 +37,8 @@ jobs:
             .last_fed_news \
             .last_ecb_news \
             .last_boj_news \
-            .last_boe_news
+            .last_boe_news \
+            .last_treasury_news
 
           if ! git diff --cached --quiet; then
             git commit -m "Update news state"
