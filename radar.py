@@ -25,14 +25,23 @@ def download(url, retries=3):
         try:
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": USER_AGENT}
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml,"
+                              "application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
             )
 
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=30
+            ) as response:
                 return response.read()
 
         except Exception as error:
             last_error = error
+
             print(
                 f"Download attempt {attempt}/{retries} failed "
                 f"for {url}: {error}"
@@ -63,7 +72,10 @@ def send_telegram(message):
         method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(
+        request,
+        timeout=30
+    ) as response:
         response.read()
 
 
@@ -79,7 +91,13 @@ def normalize_url(url):
     ))
 
 
-def process_news(source_name, flag, title, link, state_file):
+def process_news(
+    source_name,
+    flag,
+    title,
+    link,
+    state_file
+):
     title = " ".join(title.split())
     link = normalize_url(link)
 
@@ -91,8 +109,14 @@ def process_news(source_name, flag, title, link, state_file):
     previous_link = ""
 
     if os.path.exists(state_file):
-        with open(state_file, "r", encoding="utf-8") as file:
-            previous_link = normalize_url(file.read().strip())
+        with open(
+            state_file,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            previous_link = normalize_url(
+                file.read().strip()
+            )
 
     if previous_link == link:
         print(f"No new {source_name} news.")
@@ -107,7 +131,11 @@ def process_news(source_name, flag, title, link, state_file):
 
     send_telegram(message)
 
-    with open(state_file, "w", encoding="utf-8") as file:
+    with open(
+        state_file,
+        "w",
+        encoding="utf-8"
+    ) as file:
         file.write(link)
 
     print(f"New {source_name} news sent.")
@@ -132,7 +160,8 @@ def fetch_federal_reserve():
         )
 
         pattern = re.compile(
-            r'href="([^"]*/newsevents/pressreleases/[^"]+\.htm)"'
+            r'href="([^"]*/newsevents/'
+            r'pressreleases/[^"]+\.htm)"'
             r'[^>]*>(.*?)</a>',
             re.IGNORECASE | re.DOTALL
         )
@@ -146,14 +175,25 @@ def fetch_federal_reserve():
 
         link, raw_title = matches[0]
 
-        title = re.sub(r"<[^>]+>", "", raw_title)
+        title = re.sub(
+            r"<[^>]+>",
+            "",
+            raw_title
+        )
+
         title = html.unescape(title)
 
         if link.startswith("/"):
-            link = "https://www.federalreserve.gov" + link
+            link = (
+                "https://www.federalreserve.gov"
+                + link
+            )
 
         elif not link.startswith("http"):
-            link = urllib.parse.urljoin(page_url, link)
+            link = urllib.parse.urljoin(
+                page_url,
+                link
+            )
 
         process_news(
             "Federal Reserve",
@@ -164,7 +204,10 @@ def fetch_federal_reserve():
         )
 
     except Exception as error:
-        print(f"Federal Reserve failed, skipping: {error}")
+        print(
+            f"Federal Reserve failed, skipping: "
+            f"{error}"
+        )
 
 
 # ============================================================
@@ -173,7 +216,9 @@ def fetch_federal_reserve():
 
 def fetch_ecb():
     try:
-        feed_url = "https://www.ecb.europa.eu/rss/press.html"
+        feed_url = (
+            "https://www.ecb.europa.eu/rss/press.html"
+        )
 
         feed_data = download(feed_url)
 
@@ -181,12 +226,19 @@ def fetch_ecb():
         items = root.findall(".//item")
 
         if not items:
-            raise RuntimeError("No ECB news items found")
+            raise RuntimeError(
+                "No ECB news items found"
+            )
 
         item = items[0]
 
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
+        title = (
+            item.findtext("title") or ""
+        ).strip()
+
+        link = (
+            item.findtext("link") or ""
+        ).strip()
 
         process_news(
             "European Central Bank (ECB)",
@@ -197,7 +249,9 @@ def fetch_ecb():
         )
 
     except Exception as error:
-        print(f"ECB failed, skipping: {error}")
+        print(
+            f"ECB failed, skipping: {error}"
+        )
 
 
 # ============================================================
@@ -206,7 +260,9 @@ def fetch_ecb():
 
 def fetch_boj():
     try:
-        feed_url = "https://www.boj.or.jp/en/rss/whatsnew.xml"
+        feed_url = (
+            "https://www.boj.or.jp/en/rss/whatsnew.xml"
+        )
 
         feed_data = download(feed_url)
 
@@ -218,7 +274,9 @@ def fetch_boj():
             items = root.findall(".//{*}entry")
 
         if not items:
-            raise RuntimeError("No BOJ news items found")
+            raise RuntimeError(
+                "No BOJ news items found"
+            )
 
         item = items[0]
 
@@ -233,11 +291,16 @@ def fetch_boj():
             else ""
         )
 
-        link = (item.findtext("link") or "").strip()
+        link = (
+            item.findtext("link") or ""
+        ).strip()
 
         if not link:
             for node in item.findall("{*}link"):
-                link = node.attrib.get("href", "")
+                link = node.attrib.get(
+                    "href",
+                    ""
+                )
 
                 if link:
                     break
@@ -251,7 +314,9 @@ def fetch_boj():
         )
 
     except Exception as error:
-        print(f"BOJ failed, skipping: {error}")
+        print(
+            f"BOJ failed, skipping: {error}"
+        )
 
 
 # ============================================================
@@ -262,7 +327,8 @@ def fetch_boe():
     try:
         page_url = (
             "https://www.bankofengland.co.uk/news"
-            "?Direction=Latest&InfiniteScrolling=False"
+            "?Direction=Latest"
+            "&InfiniteScrolling=False"
         )
 
         page = download(page_url).decode(
@@ -271,7 +337,8 @@ def fetch_boe():
         )
 
         matches = re.findall(
-            r'href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            r'href=["\']([^"\']+)["\']'
+            r'[^>]*>(.*?)</a>',
             page,
             flags=re.IGNORECASE | re.DOTALL
         )
@@ -284,9 +351,19 @@ def fetch_boe():
             if "/news/" not in link.lower():
                 continue
 
-            title = re.sub(r"<[^>]+>", " ", raw_title)
+            title = re.sub(
+                r"<[^>]+>",
+                " ",
+                raw_title
+            )
+
             title = html.unescape(title)
-            title = re.sub(r"\s+", " ", title).strip()
+
+            title = re.sub(
+                r"\s+",
+                " ",
+                title
+            ).strip()
 
             if len(title) < 15:
                 continue
@@ -307,7 +384,10 @@ def fetch_boe():
             selected_title = title
             break
 
-        if not selected_link or not selected_title:
+        if (
+            not selected_link
+            or not selected_title
+        ):
             raise RuntimeError(
                 "No Bank of England news item found"
             )
@@ -321,54 +401,72 @@ def fetch_boe():
         )
 
     except Exception as error:
-        print(f"BoE failed, skipping: {error}")
+        print(
+            f"BoE failed, skipping: {error}"
+        )
 
 
 # ============================================================
 # U.S. Department of the Treasury
+# Diagnostic version
 # ============================================================
 
 def fetch_treasury():
     try:
-        page_url = "https://home.treasury.gov/news/press-releases"
+        page_url = (
+            "https://home.treasury.gov/"
+            "news/press-releases"
+        )
 
-        page = download(page_url).decode(
+        raw_data = download(page_url)
+
+        page = raw_data.decode(
             "utf-8",
             errors="ignore"
         )
 
-        anchors = re.findall(
-            r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-            page,
-            flags=re.IGNORECASE | re.DOTALL
+        print(
+            f"Treasury diagnostic: "
+            f"downloaded {len(raw_data)} bytes."
         )
 
-        selected_link = ""
-        selected_title = ""
+        lower_page = page.lower()
 
-        for link, raw_title in anchors:
-            clean_link = html.unescape(link)
+        print(
+            "Treasury diagnostic: "
+            "contains 'press releases' = "
+            f"{'press releases' in lower_page}"
+        )
 
-            parsed = urllib.parse.urlsplit(clean_link)
-            path = parsed.path.rstrip("/")
+        print(
+            "Treasury diagnostic: "
+            "contains '/news/press-releases/' = "
+            f"{'/news/press-releases/' in lower_page}"
+        )
 
-            if not re.fullmatch(
-                r"/news/press-releases/[A-Za-z0-9_-]+",
-                path,
-                flags=re.IGNORECASE
+        print(
+            "Treasury diagnostic: "
+            "contains 'treasury international capital' = "
+            f"{'treasury international capital' in lower_page}"
+        )
+
+        links = re.findall(
+            r'href\s*=\s*["\']([^"\']+)["\']',
+            page,
+            flags=re.IGNORECASE
+        )
+
+        treasury_links = []
+
+        for link in links:
+            clean_link = html.unescape(
+                link
+            ).strip()
+
+            if (
+                "/news/press-releases/"
+                not in clean_link.lower()
             ):
-                continue
-
-            title = re.sub(
-                r"<[^>]+>",
-                " ",
-                raw_title
-            )
-
-            title = html.unescape(title)
-            title = re.sub(r"\s+", " ", title).strip()
-
-            if len(title) < 15:
                 continue
 
             if clean_link.startswith("/"):
@@ -383,25 +481,121 @@ def fetch_treasury():
                     clean_link
                 )
 
-            selected_link = clean_link
-            selected_title = title
-            break
-
-        if not selected_link or not selected_title:
-            raise RuntimeError(
-                "No U.S. Treasury press release found"
+            clean_link = normalize_url(
+                clean_link
             )
+
+            if clean_link == normalize_url(
+                page_url
+            ):
+                continue
+
+            if clean_link not in treasury_links:
+                treasury_links.append(
+                    clean_link
+                )
+
+        print(
+            "Treasury diagnostic: "
+            f"candidate links = "
+            f"{len(treasury_links)}"
+        )
+
+        if treasury_links:
+            print(
+                "Treasury diagnostic: "
+                f"first candidate = "
+                f"{treasury_links[0]}"
+            )
+
+        if not treasury_links:
+            print(
+                "Treasury diagnostic: "
+                "No candidate article links found."
+            )
+
+            return
+
+        selected_link = treasury_links[0]
+
+        article_page = download(
+            selected_link
+        ).decode(
+            "utf-8",
+            errors="ignore"
+        )
+
+        title = ""
+
+        title_patterns = [
+            (
+                r'<meta[^>]+property=["\']'
+                r'og:title["\'][^>]+content=["\']'
+                r'([^"\']+)'
+            ),
+            (
+                r'<meta[^>]+content=["\']'
+                r'([^"\']+)["\'][^>]+property=["\']'
+                r'og:title["\']'
+            ),
+            (
+                r'<h1[^>]*>(.*?)</h1>'
+            ),
+            (
+                r'<title[^>]*>(.*?)</title>'
+            ),
+        ]
+
+        for pattern in title_patterns:
+            match = re.search(
+                pattern,
+                article_page,
+                flags=re.IGNORECASE | re.DOTALL
+            )
+
+            if not match:
+                continue
+
+            title = re.sub(
+                r"<[^>]+>",
+                " ",
+                match.group(1)
+            )
+
+            title = html.unescape(title)
+
+            title = re.sub(
+                r"\s+",
+                " ",
+                title
+            ).strip()
+
+            if title:
+                break
+
+        if not title:
+            raise RuntimeError(
+                "Treasury article found, "
+                "but title could not be extracted"
+            )
+
+        print(
+            "Treasury diagnostic: "
+            f"title = {title}"
+        )
 
         process_news(
             "U.S. Department of the Treasury",
             "🇺🇸",
-            selected_title,
+            title,
             selected_link,
             ".last_treasury_news"
         )
 
     except Exception as error:
-        print(f"Treasury failed, skipping: {error}")
+        print(
+            f"Treasury failed, skipping: {error}"
+        )
 
 
 # ============================================================
@@ -409,9 +603,15 @@ def fetch_treasury():
 # ============================================================
 
 def main():
-    print("====================================")
-    print("TriFlux 24/7 Financial Radar")
-    print("====================================")
+    print(
+        "===================================="
+    )
+    print(
+        "TriFlux 24/7 Financial Radar"
+    )
+    print(
+        "===================================="
+    )
 
     fetch_federal_reserve()
     fetch_ecb()
@@ -419,9 +619,15 @@ def main():
     fetch_boe()
     fetch_treasury()
 
-    print("====================================")
-    print("Radar scan complete.")
-    print("====================================")
+    print(
+        "===================================="
+    )
+    print(
+        "Radar scan complete."
+    )
+    print(
+        "===================================="
+    )
 
 
 if __name__ == "__main__":
