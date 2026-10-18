@@ -1,3 +1,4 @@
+
 import os
 import re
 import html
@@ -28,29 +29,27 @@ def download(url, retries=3):
                 headers={
                     "User-Agent": USER_AGENT,
                     "Accept": (
-                        "text/html,application/xhtml+xml,"
-                        "application/xml;q=0.9,*/*;q=0.8"
+                        "application/rss+xml, application/xml, "
+                        "text/xml, text/html, */*"
                     ),
                     "Accept-Language": "en-US,en;q=0.9",
-                }
+                },
             )
 
             with urllib.request.urlopen(
-                request,
-                timeout=30
+                request, timeout=30
             ) as response:
                 return response.read()
 
         except Exception as error:
             last_error = error
-
             print(
-                f"Download attempt {attempt}/{retries} failed "
-                f"for {url}: {error}"
+                f"Download attempt {attempt}/{retries} "
+                f"failed for {url}: {error}"
             )
 
             if attempt < retries:
-                time.sleep(5)
+                time.sleep(3)
 
     raise last_error
 
@@ -65,31 +64,41 @@ def send_telegram(message):
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": message,
-        "disable_web_page_preview": "true"
+        "disable_web_page_preview": "true",
     }).encode()
 
     request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST"
+        url, data=data, method="POST"
     )
 
     with urllib.request.urlopen(
-        request,
-        timeout=30
+        request, timeout=30
     ) as response:
-        response.read()
+        result = response.read().decode(
+            "utf-8", errors="replace"
+        )
+
+    # Telegram returns JSON with "ok": false on API errors.
+    if '"ok": false' in result or '"ok":false' in result:
+        raise RuntimeError(
+            f"Telegram rejected the message: {result}"
+        )
 
 
 def normalize_url(url):
+    url = url.strip()
+
+    if not url:
+        return ""
+
     parsed = urllib.parse.urlsplit(url)
 
     return urllib.parse.urlunsplit((
         parsed.scheme,
         parsed.netloc,
         parsed.path.rstrip("/"),
+        parsed.query,
         "",
-        ""
     ))
 
 
@@ -98,9 +107,9 @@ def process_news(
     flag,
     title,
     link,
-    state_file
+    state_file,
 ):
-    title = " ".join(title.split())
+    title = " ".join(html.unescape(title).split())
     link = normalize_url(link)
 
     if not title or not link:
@@ -112,9 +121,7 @@ def process_news(
 
     if os.path.exists(state_file):
         with open(
-            state_file,
-            "r",
-            encoding="utf-8"
+            state_file, "r", encoding="utf-8"
         ) as file:
             previous_link = normalize_url(
                 file.read().strip()
@@ -131,27 +138,54 @@ def process_news(
         "📡 TriFlux 24/7 Financial Radar"
     )
 
+    # Send first. Only save the state after Telegram succeeds.
     send_telegram(message)
 
     with open(
-        state_file,
-        "w",
-        encoding="utf-8"
+        state_file, "w", encoding="utf-8"
     ) as file:
         file.write(link)
 
     print(f"New {source_name} news sent.")
 
 
+def extract_item_link(item, base_url):
+    link = (
+        item.findtext("link") or ""
+    ).strip()
+
+    if not link:
+        for node in item.findall("{*}link"):
+            link = (
+                node.attrib.get("href", "")
+                or node.attrib.get("url", "")
+            ).strip()
+
+            if link:
+                break
+
+    if not link:
+        guid = (
+            item.findtext("guid") or ""
+        ).strip()
+
+        if guid.startswith("http"):
+            link = guid
+
+    if link:
+        link = urllib.parse.urljoin(base_url, link)
+
+    return link
+
+
 def fetch_rss_source(
     source_name,
     flag,
     feed_url,
-    state_file
+    state_file,
 ):
     try:
         feed_data = download(feed_url)
-
         root = ET.fromstring(feed_data)
 
         items = root.findall(".//item")
@@ -161,61 +195,38 @@ def fetch_rss_source(
 
         if not items:
             raise RuntimeError(
-                f"No {source_name} RSS items found"
+                f"No RSS items found at {feed_url}"
             )
 
         item = items[0]
 
-        title = (
-            item.findtext("title") or ""
-        ).strip()
+        title_node = item.find("{*}title")
 
-        if not title:
-            title_node = item.find("{*}title")
-
-            if title_node is not None:
-                title = "".join(
-                    title_node.itertext()
-                ).strip()
-
-        link = (
-            item.findtext("link") or ""
-        ).strip()
-
-        if not link:
-            for node in item.findall("{*}link"):
-                link = node.attrib.get(
-                    "href",
-                    ""
-                )
-
-                if link:
-                    break
-
-        if not link:
-            guid = (
-                item.findtext("guid") or ""
+        if title_node is not None:
+            title = "".join(
+                title_node.itertext()
+            ).strip()
+        else:
+            title = (
+                item.findtext("title") or ""
             ).strip()
 
-            if guid.startswith("http"):
-                link = guid
+        link = extract_item_link(item, feed_url)
 
         process_news(
             source_name,
             flag,
             title,
             link,
-            state_file
+            state_file,
         )
 
     except Exception as error:
-        print(
-            f"{source_name} failed, skipping: {error}"
-        )
+        print(f"{source_name} failed, skipping: {error}")
 
 
 # ============================================================
-# Federal Reserve
+# 1. Federal Reserve
 # ============================================================
 
 def fetch_federal_reserve():
@@ -228,15 +239,14 @@ def fetch_federal_reserve():
         )
 
         page = download(page_url).decode(
-            "utf-8",
-            errors="ignore"
+            "utf-8", errors="ignore"
         )
 
         pattern = re.compile(
-            r'href="([^"]*/newsevents/'
-            r'pressreleases/[^"]+\.htm)"'
+            r'href=["\']([^"\']*/newsevents/'
+            r'pressreleases/[^"\']+\.htm)["\']'
             r'[^>]*>(.*?)</a>',
-            re.IGNORECASE | re.DOTALL
+            re.IGNORECASE | re.DOTALL,
         )
 
         matches = pattern.findall(page)
@@ -246,44 +256,35 @@ def fetch_federal_reserve():
                 "No Federal Reserve press releases found"
             )
 
-        link, raw_title = matches[0]
+        for link, raw_title in matches:
+            title = html.unescape(
+                re.sub(r"<[^>]+>", "", raw_title)
+            ).strip()
 
-        title = re.sub(
-            r"<[^>]+>",
-            "",
-            raw_title
-        )
+            if not title:
+                continue
 
-        title = html.unescape(title)
+            link = urllib.parse.urljoin(page_url, link)
 
-        if link.startswith("/"):
-            link = (
-                "https://www.federalreserve.gov"
-                + link
+            process_news(
+                "Federal Reserve",
+                "🇺🇸",
+                title,
+                link,
+                ".last_fed_news",
             )
+            return
 
-        elif not link.startswith("http"):
-            link = urllib.parse.urljoin(
-                page_url,
-                link
-            )
-
-        process_news(
-            "Federal Reserve",
-            "🇺🇸",
-            title,
-            link,
-            ".last_fed_news"
+        raise RuntimeError(
+            "Federal Reserve titles could not be extracted"
         )
 
     except Exception as error:
-        print(
-            f"Federal Reserve failed, skipping: {error}"
-        )
+        print(f"Federal Reserve failed, skipping: {error}")
 
 
 # ============================================================
-# European Central Bank
+# 2. European Central Bank
 # ============================================================
 
 def fetch_ecb():
@@ -291,12 +292,12 @@ def fetch_ecb():
         "European Central Bank (ECB)",
         "🇪🇺",
         "https://www.ecb.europa.eu/rss/press.html",
-        ".last_ecb_news"
+        ".last_ecb_news",
     )
 
 
 # ============================================================
-# Bank of Japan
+# 3. Bank of Japan
 # ============================================================
 
 def fetch_boj():
@@ -304,96 +305,66 @@ def fetch_boj():
         "Bank of Japan (BOJ)",
         "🇯🇵",
         "https://www.boj.or.jp/en/rss/whatsnew.xml",
-        ".last_boj_news"
+        ".last_boj_news",
     )
 
 
 # ============================================================
-# Bank of England
+# 4. Bank of England
 # ============================================================
 
 def fetch_boe():
     try:
         page_url = (
             "https://www.bankofengland.co.uk/news"
-            "?Direction=Latest"
-            "&InfiniteScrolling=False"
+            "?Direction=Latest&InfiniteScrolling=False"
         )
 
         page = download(page_url).decode(
-            "utf-8",
-            errors="ignore"
+            "utf-8", errors="ignore"
         )
 
         matches = re.findall(
             r'href=["\']([^"\']+)["\']'
             r'[^>]*>(.*?)</a>',
             page,
-            flags=re.IGNORECASE | re.DOTALL
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
-        selected_link = ""
-        selected_title = ""
-
         for link, raw_title in matches:
-
             if "/news/" not in link.lower():
                 continue
 
             title = re.sub(
-                r"<[^>]+>",
-                " ",
-                raw_title
+                r"<[^>]+>", " ", raw_title
             )
-
             title = html.unescape(title)
-
-            title = re.sub(
-                r"\s+",
-                " ",
-                title
-            ).strip()
+            title = " ".join(title.split())
 
             if len(title) < 15:
                 continue
 
-            if link.startswith("/"):
-                link = (
-                    "https://www.bankofengland.co.uk"
-                    + link
-                )
+            link = urllib.parse.urljoin(page_url, link)
 
-            elif not link.startswith("http"):
-                link = urllib.parse.urljoin(
-                    page_url,
-                    link
-                )
-
-            selected_link = link
-            selected_title = title
-            break
-
-        if not selected_link or not selected_title:
-            raise RuntimeError(
-                "No Bank of England news item found"
+            process_news(
+                "Bank of England (BoE)",
+                "🇬🇧",
+                title,
+                link,
+                ".last_boe_news",
             )
+            return
 
-        process_news(
-            "Bank of England (BoE)",
-            "🇬🇧",
-            selected_title,
-            selected_link,
-            ".last_boe_news"
+        raise RuntimeError(
+            "No Bank of England news item found"
         )
 
     except Exception as error:
-        print(
-            f"BoE failed, skipping: {error}"
-        )
+        print(f"BoE failed, skipping: {error}")
 
 
 # ============================================================
-# U.S. Department of the Treasury
+# 5. U.S. Department of the Treasury
 # ============================================================
 
 def fetch_treasury():
@@ -404,8 +375,7 @@ def fetch_treasury():
         )
 
         page = download(page_url).decode(
-            "utf-8",
-            errors="ignore"
+            "utf-8", errors="ignore"
         )
 
         patterns = [
@@ -417,16 +387,10 @@ def fetch_treasury():
         article_paths = []
 
         for pattern in patterns:
-            matches = re.findall(
-                pattern,
-                page,
-                flags=re.IGNORECASE
-            )
-
-            for path in matches:
-                path = path.replace("\\/", "/")
-                path = html.unescape(path)
-                path = path.rstrip("/")
+            for path in re.findall(
+                pattern, page, flags=re.IGNORECASE
+            ):
+                path = path.replace("\\/", "/").rstrip("/")
 
                 if path not in article_paths:
                     article_paths.append(path)
@@ -436,31 +400,25 @@ def fetch_treasury():
                 "No Treasury article paths found"
             )
 
-        selected_link = (
-            "https://home.treasury.gov"
-            + article_paths[0]
+        article_path = article_paths[0]
+        article_link = urllib.parse.urljoin(
+            "https://home.treasury.gov",
+            article_path,
         )
 
         article_page = download(
-            selected_link
-        ).decode(
-            "utf-8",
-            errors="ignore"
-        )
+            article_link
+        ).decode("utf-8", errors="ignore")
 
         title = ""
 
         title_patterns = [
-            (
-                r'<meta[^>]+property=["\']'
-                r'og:title["\'][^>]+content=["\']'
-                r'([^"\']+)'
-            ),
-            (
-                r'<meta[^>]+content=["\']'
-                r'([^"\']+)["\'][^>]+property=["\']'
-                r'og:title["\']'
-            ),
+            r'<meta[^>]+property=["\']og:title["\']'
+            r'[^>]+content=["\']([^"\']+)',
+
+            r'<meta[^>]+content=["\']([^"\']+)'
+            r'["\'][^>]+property=["\']og:title["\']',
+
             r'<h1[^>]*>(.*?)</h1>',
             r'<title[^>]*>(.*?)</title>',
         ]
@@ -469,28 +427,19 @@ def fetch_treasury():
             match = re.search(
                 pattern,
                 article_page,
-                flags=re.IGNORECASE | re.DOTALL
+                flags=re.IGNORECASE | re.DOTALL,
             )
 
-            if not match:
-                continue
+            if match:
+                title = html.unescape(
+                    re.sub(
+                        r"<[^>]+>", " ", match.group(1)
+                    )
+                )
+                title = " ".join(title.split())
 
-            title = re.sub(
-                r"<[^>]+>",
-                " ",
-                match.group(1)
-            )
-
-            title = html.unescape(title)
-
-            title = re.sub(
-                r"\s+",
-                " ",
-                title
-            ).strip()
-
-            if title:
-                break
+                if title:
+                    break
 
         if not title:
             raise RuntimeError(
@@ -501,18 +450,16 @@ def fetch_treasury():
             "U.S. Department of the Treasury",
             "🇺🇸",
             title,
-            selected_link,
-            ".last_treasury_news"
+            article_link,
+            ".last_treasury_news",
         )
 
     except Exception as error:
-        print(
-            f"Treasury failed, skipping: {error}"
-        )
+        print(f"Treasury failed, skipping: {error}")
 
 
 # ============================================================
-# U.S. Securities and Exchange Commission
+# 6. U.S. Securities and Exchange Commission
 # ============================================================
 
 def fetch_sec():
@@ -520,12 +467,12 @@ def fetch_sec():
         "U.S. Securities and Exchange Commission (SEC)",
         "🇺🇸",
         "https://www.sec.gov/news/pressreleases.rss",
-        ".last_sec_news"
+        ".last_sec_news",
     )
 
 
 # ============================================================
-# U.S. Bureau of Labor Statistics
+# 7. Bureau of Labor Statistics: Employment Situation
 # ============================================================
 
 def fetch_bls_employment():
@@ -533,35 +480,146 @@ def fetch_bls_employment():
         "BLS Employment Situation",
         "🇺🇸",
         "https://www.bls.gov/feed/empsit.rss",
-        ".last_bls_employment"
+        ".last_bls_employment",
     )
 
+
+# ============================================================
+# 8. Bureau of Labor Statistics: CPI
+# ============================================================
 
 def fetch_bls_cpi():
     fetch_rss_source(
         "BLS Consumer Price Index (CPI)",
         "🇺🇸",
         "https://www.bls.gov/feed/cpi.rss",
-        ".last_bls_cpi"
+        ".last_bls_cpi",
     )
 
+
+# ============================================================
+# 9. Bureau of Labor Statistics: PPI
+# ============================================================
 
 def fetch_bls_ppi():
     fetch_rss_source(
         "BLS Producer Price Index (PPI)",
         "🇺🇸",
         "https://www.bls.gov/feed/ppi.rss",
-        ".last_bls_ppi"
+        ".last_bls_ppi",
     )
 
+
+# ============================================================
+# 10. Bureau of Labor Statistics: JOLTS
+# ============================================================
 
 def fetch_bls_jolts():
     fetch_rss_source(
         "BLS Job Openings and Labor Turnover (JOLTS)",
         "🇺🇸",
         "https://www.bls.gov/feed/jolts.rss",
-        ".last_bls_jolts"
+        ".last_bls_jolts",
     )
+
+
+# ============================================================
+# 11. Bureau of Economic Analysis: GDP and PCE
+# ============================================================
+
+def fetch_bea():
+    feed_url = "https://apps.bea.gov/rss/rss.xml"
+
+    try:
+        feed_data = download(feed_url)
+        root = ET.fromstring(feed_data)
+
+        items = root.findall(".//item")
+
+        if not items:
+            items = root.findall(".//{*}entry")
+
+        if not items:
+            raise RuntimeError(
+                "No BEA RSS items found"
+            )
+
+        # Each category has its own saved link, so GDP and
+        # PCE can be tracked independently.
+        categories = {
+            "gdp": {
+                "keywords": (
+                    "gross domestic product",
+                    "gdp",
+                ),
+                "state_file": ".last_bea_gdp",
+                "name": "BEA Gross Domestic Product (GDP)",
+            },
+            "pce": {
+                "keywords": (
+                    "personal income and outlays",
+                    "personal consumption expenditures",
+                    "pce price index",
+                    "personal income",
+                ),
+                "state_file": ".last_bea_pce",
+                "name": "BEA Personal Income, Outlays and PCE",
+            },
+        }
+
+        found = set()
+
+        for item in items:
+            title_node = item.find("{*}title")
+
+            if title_node is not None:
+                title = "".join(
+                    title_node.itertext()
+                ).strip()
+            else:
+                title = (
+                    item.findtext("title") or ""
+                ).strip()
+
+            if not title:
+                continue
+
+            link = extract_item_link(item, feed_url)
+
+            if not link:
+                continue
+
+            title_lower = title.lower()
+
+            for key, category in categories.items():
+                if key in found:
+                    continue
+
+                if any(
+                    keyword in title_lower
+                    for keyword in category["keywords"]
+                ):
+                    process_news(
+                        category["name"],
+                        "🇺🇸",
+                        title,
+                        link,
+                        category["state_file"],
+                    )
+
+                    found.add(key)
+
+            if len(found) == len(categories):
+                break
+
+        if not found:
+            print(
+                "BEA RSS retrieved, but no matching "
+                "GDP/PCE release was found."
+            )
+
+    except Exception as error:
+        print(f"BEA failed, skipping: {error}")
 
 
 # ============================================================
@@ -584,6 +642,8 @@ def main():
     fetch_bls_cpi()
     fetch_bls_ppi()
     fetch_bls_jolts()
+
+    fetch_bea()
 
     print("====================================")
     print("Radar scan complete.")
