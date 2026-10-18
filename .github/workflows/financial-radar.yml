@@ -15,69 +15,47 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
+          import re
+          import html
           import urllib.request
           import urllib.parse
-          import xml.etree.ElementTree as ET
 
-          feed_url = "https://www.federalreserve.gov/feeds/press_all.xml?format=xml"
+          page_url = "https://www.federalreserve.gov/newsevents/pressreleases/2026-press.htm"
 
           req = urllib.request.Request(
-              feed_url,
-              headers={"User-Agent": "Mozilla/5.0 TriFlux247/1.0"}
+              page_url,
+              headers={
+                  "User-Agent": "Mozilla/5.0 (compatible; TriFlux247/1.0)"
+              }
           )
 
           with urllib.request.urlopen(req, timeout=30) as response:
-              xml_data = response.read()
+              page = response.read().decode("utf-8", errors="ignore")
 
-          root = ET.fromstring(xml_data)
-
-          # Federal Reserve feed uses Atom-style entries.
-          entries = root.findall(".//{*}entry")
-
-          # Also support normal RSS <item> feeds.
-          if not entries:
-              entries = root.findall(".//item")
-
-          if not entries:
-              raise RuntimeError("No Federal Reserve news entries found")
-
-          entry = entries[0]
-
-          def find_text(element, name):
-              node = element.find(f"{{*}}{name}")
-              if node is None:
-                  node = element.find(name)
-              if node is not None and node.text:
-                  return node.text.strip()
-              return ""
-
-          title = find_text(entry, "title")
-          updated = (
-              find_text(entry, "updated")
-              or find_text(entry, "published")
-              or find_text(entry, "pubDate")
+          pattern = re.compile(
+              r'href="([^"]*/newsevents/pressreleases/[^"]+\.htm)"[^>]*>(.*?)</a>',
+              re.IGNORECASE | re.DOTALL
           )
 
-          link = ""
+          matches = pattern.findall(page)
 
-          for link_node in entry.findall("{*}link"):
-              href = link_node.attrib.get("href")
-              if href:
-                  link = href
-                  break
+          if not matches:
+              raise RuntimeError("No Federal Reserve press releases found")
 
-          if not link:
-              link_node = entry.find("link")
-              if link_node is not None:
-                  link = (link_node.text or "").strip()
+          link, raw_title = matches[0]
 
-          if not title:
-              title = "Federal Reserve Update"
+          title = re.sub(r"<[^>]+>", "", raw_title)
+          title = html.unescape(title)
+          title = " ".join(title.split())
+
+          if link.startswith("/"):
+              link = "https://www.federalreserve.gov" + link
+          elif not link.startswith("http"):
+              link = urllib.parse.urljoin(page_url, link)
 
           message = (
               "🇺🇸 Federal Reserve\n\n"
               f"📌 {title}\n\n"
-              f"🕒 {updated}\n"
               f"🔗 {link}\n\n"
               "📡 TriFlux 24/7 Financial Radar"
           )
