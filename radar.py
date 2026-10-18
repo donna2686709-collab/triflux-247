@@ -500,7 +500,154 @@ def fetch_latest_feed(
             f"{source} failed, "
             f"skipping: {error}"
         )
+def fetch_cftc_cot_tff():
+    source = "CFTC COT TFF"
+    state_file = ".last_cftc_cot_tff"
 
+    try:
+        query = urllib.parse.urlencode({
+            "$select": (
+                "report_date_as_yyyy_mm_dd,"
+                "market_and_exchange_names,"
+                "commodity_name,"
+                "open_interest_all,"
+                "dealer_positions_long_all,"
+                "dealer_positions_short_all,"
+                "asset_mgr_positions_long,"
+                "asset_mgr_positions_short,"
+                "lev_money_positions_long,"
+                "lev_money_positions_short"
+            ),
+            "$order": "report_date_as_yyyy_mm_dd DESC",
+            "$limit": "500",
+        })
+
+        api_url = (
+            "https://publicreporting.cftc.gov/resource/"
+            "yw9f-hn96.json?"
+            + query
+        )
+
+        rows = json.loads(
+            download(api_url).decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(
+                "CFTC TFF API returned no rows"
+            )
+
+        report_dates = [
+            str(
+                row.get(
+                    "report_date_as_yyyy_mm_dd",
+                    "",
+                )
+            )[:10]
+            for row in rows
+            if row.get(
+                "report_date_as_yyyy_mm_dd"
+            )
+        ]
+
+        if not report_dates:
+            raise RuntimeError(
+                "CFTC TFF API returned no report date"
+            )
+
+        latest_date = max(
+            report_dates
+        )
+
+        latest_rows = [
+            row
+            for row in rows
+            if str(
+                row.get(
+                    "report_date_as_yyyy_mm_dd",
+                    "",
+                )
+            )[:10] == latest_date
+        ]
+
+        if not latest_rows:
+            raise RuntimeError(
+                "CFTC TFF latest report has no rows"
+            )
+
+        stable_id = (
+            f"CFTC-TFF:{latest_date}"
+        )
+
+        state = read_state(
+            state_file
+        )
+
+        if not state["initialized"]:
+            write_state(
+                state_file,
+                [stable_id],
+            )
+
+            print(
+                "CFTC COT TFF: initialized baseline "
+                f"with report date {latest_date} "
+                f"and {len(latest_rows)} market rows; "
+                "no historical messages sent."
+            )
+
+            return
+
+        if stable_id in state["ids"]:
+            print(
+                "No new CFTC COT TFF report; "
+                f"latest report date is {latest_date}."
+            )
+
+            return
+
+        link = (
+            "https://publicreporting.cftc.gov/"
+            "Commitments-of-Traders/"
+            "TFF-Combined/yw9f-hn96"
+        )
+
+        details = (
+            f"Report date: {latest_date}\n"
+            f"Financial market rows: "
+            f"{len(latest_rows)}\n"
+            "Categories: Dealer, Asset Manager, "
+            "Leveraged Money, Other Reportables, "
+            "and Non-Reportables.\n"
+            "Frequency: Weekly COT report; "
+            "positions are reported as of the "
+            "prior Tuesday close.\n"
+            "Source: U.S. Commodity Futures "
+            "Trading Commission official "
+            "Public Reporting Environment."
+        )
+
+        send_one(
+            source,
+            "🇺🇸",
+            (
+                "New TFF positioning report "
+                f"({latest_date})"
+            ),
+            link,
+            state_file,
+            item_id=stable_id,
+            details=details,
+        )
+
+    except Exception as error:
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
 def fetch_federal_reserve():
     source = "Federal Reserve"
@@ -1179,6 +1326,7 @@ def fetch_sec_filings():
 
 
 def fetch_sofr():
+    fetch_cftc_cot_tff()
     source = (
         "New York Fed SOFR"
     )
