@@ -3,102 +3,253 @@ import re
 import urllib.parse
 
 from core.feed import fetch_latest_feed, item_id, item_link, item_title
+from core.network import download
 from core.telegram import send_one
 
 
-FED_FEED = "https://www.federalreserve.gov/feeds/press_all.xml"
-ECB_FEED = "https://www.ecb.europa.eu/rss/press.html"
-BOJ_FEED = "https://www.boj.or.jp/en/rss/whatsnew.xml"
-BOE_FEED = "https://www.bankofengland.co.uk/rss/news"
+def fetch_federal_reserve():
+    source = "Federal Reserve"
 
-FED_STATE = ".last_fed_news"
-ECB_STATE = ".last_ecb_news"
-BOJ_STATE = ".last_boj_news"
-BOE_STATE = ".last_boe_news"
-
-
-def _clean_text(value):
-    if not value:
-        return ""
-
-    value = html.unescape(value)
-    value = re.sub(r"\s+", " ", value)
-
-    return value.strip()
-
-
-def _absolute_url(base_url, link):
-    if not link:
-        return ""
-
-    return urllib.parse.urljoin(base_url, link)
-
-
-def _fetch_latest(
-    source,
-    feed_url,
-    state_file,
-):
     try:
-        items = fetch_latest_feed(feed_url)
+        from datetime import datetime, timezone
 
-        if not items:
-            print(f"{source}: feed returned no items.")
-            return
+        year = datetime.now(
+            timezone.utc
+        ).year
 
-        latest = items[0]
-
-        title = _clean_text(item_title(latest))
-        link = _absolute_url(
-            feed_url,
-            item_link(latest),
+        url = (
+            "https://www.federalreserve.gov/"
+            "newsevents/pressreleases/"
+            f"{year}-press.htm"
         )
-        identifier = _clean_text(item_id(latest))
 
-        if not title:
-            print(f"{source}: latest feed item has no title.")
-            return
+        page = download(
+            url
+        ).decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        matches = re.findall(
+            r'href=["\']'
+            r'([^"\']*/newsevents/'
+            r'pressreleases/'
+            r'[^"\']+\.htm)'
+            r'["\'][^>]*>'
+            r'(.*?)</a>',
+            page,
+            re.I | re.S,
+        )
+
+        if not matches:
+            raise RuntimeError(
+                "No Federal Reserve "
+                "press releases found"
+            )
+
+        link, raw_title = matches[0]
+
+        title = " ".join(
+            html.unescape(
+                re.sub(
+                    r"<[^>]+>",
+                    " ",
+                    raw_title,
+                )
+            ).split()
+        )
 
         send_one(
-            source=source,
-            title=title,
-            link=link,
-            state_file=state_file,
-            item_id=identifier,
-            category="Central Banks",
+            source,
+            "🇺🇸",
+            title,
+            urllib.parse.urljoin(
+                url,
+                link,
+            ),
+            ".last_fed_news",
         )
 
-    except Exception as exc:
-        print(f"{source} error: {exc}")
-
-
-def fetch_fed():
-    _fetch_latest(
-        source="Federal Reserve",
-        feed_url=FED_FEED,
-        state_file=FED_STATE,
-    )
+    except Exception as error:
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
 
 def fetch_ecb():
-    _fetch_latest(
-        source="European Central Bank (ECB)",
-        feed_url=ECB_FEED,
-        state_file=ECB_STATE,
+    source = (
+        "European Central Bank (ECB)"
     )
+
+    try:
+        url = (
+            "https://www.ecb.europa.eu/"
+            "rss/press.html"
+        )
+
+        items = fetch_latest_feed(url)
+
+        if not items:
+            raise RuntimeError(
+                "No ECB feed entries found"
+            )
+
+        item = items[0]
+
+        title = item_title(item)
+        link = item_link(item)
+        stable_id = item_id(item)
+
+        if link:
+            link = urllib.parse.urljoin(
+                url,
+                link,
+            )
+
+        if not title or not link:
+            raise RuntimeError(
+                "Newest ECB entry "
+                "has no title/link"
+            )
+
+        send_one(
+            source,
+            "🇪🇺",
+            title,
+            link,
+            ".last_ecb_news",
+            item_id=stable_id,
+        )
+
+    except Exception as error:
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
 
 def fetch_boj():
-    _fetch_latest(
-        source="Bank of Japan (BOJ)",
-        feed_url=BOJ_FEED,
-        state_file=BOJ_STATE,
-    )
+    source = "Bank of Japan (BOJ)"
+
+    try:
+        url = (
+            "https://www.boj.or.jp/"
+            "en/rss/whatsnew.xml"
+        )
+
+        items = fetch_latest_feed(url)
+
+        if not items:
+            raise RuntimeError(
+                "No BOJ feed entries found"
+            )
+
+        item = items[0]
+
+        title = item_title(item)
+        link = item_link(item)
+        stable_id = item_id(item)
+
+        if link:
+            link = urllib.parse.urljoin(
+                url,
+                link,
+            )
+
+        if not title or not link:
+            raise RuntimeError(
+                "Newest BOJ entry "
+                "has no title/link"
+            )
+
+        send_one(
+            source,
+            "🇯🇵",
+            title,
+            link,
+            ".last_boj_news",
+            item_id=stable_id,
+        )
+
+    except Exception as error:
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
 
 
 def fetch_boe():
-    _fetch_latest(
-        source="Bank of England (BoE)",
-        feed_url=BOE_FEED,
-        state_file=BOE_STATE,
-    )
+    source = "Bank of England (BoE)"
+
+    try:
+        url = (
+            "https://www.bankofengland.co.uk/"
+            "news?Direction=Latest"
+            "&InfiniteScrolling=False"
+        )
+
+        page = download(
+            url
+        ).decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        candidates = []
+
+        matches = re.findall(
+            r'href=["\']([^"\']+)'
+            r'["\'][^>]*>(.*?)</a>',
+            page,
+            re.I | re.S,
+        )
+
+        for link, raw in matches:
+            if "/news/" not in link.lower():
+                continue
+
+            title = " ".join(
+                html.unescape(
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        raw,
+                    )
+                ).split()
+            )
+
+            if not title:
+                continue
+
+            candidates.append(
+                (
+                    link,
+                    title,
+                )
+            )
+
+        if not candidates:
+            raise RuntimeError(
+                "No Bank of England "
+                "news items found"
+            )
+
+        link, title = candidates[0]
+
+        send_one(
+            source,
+            "🇬🇧",
+            title,
+            urllib.parse.urljoin(
+                url,
+                link,
+            ),
+            ".last_boe_news",
+        )
+
+    except Exception as error:
+        print(
+            f"{source} failed, "
+            f"skipping: {error}"
+        )
