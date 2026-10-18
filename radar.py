@@ -19,8 +19,6 @@ USER_AGENT = "Mozilla/5.0 (compatible; TriFlux247/1.0)"
 # ============================================================
 
 def download(url, retries=3):
-    """Download a webpage/feed with retries."""
-
     last_error = None
 
     for attempt in range(1, retries + 1):
@@ -47,8 +45,6 @@ def download(url, retries=3):
 
 
 def send_telegram(message):
-    """Send one message to the TriFlux Telegram channel."""
-
     url = (
         "https://api.telegram.org/bot"
         + BOT_TOKEN
@@ -72,8 +68,6 @@ def send_telegram(message):
 
 
 def normalize_url(url):
-    """Remove query strings/fragments for stable deduplication."""
-
     parsed = urllib.parse.urlsplit(url)
 
     return urllib.parse.urlunsplit((
@@ -86,8 +80,6 @@ def normalize_url(url):
 
 
 def process_news(source_name, flag, title, link, state_file):
-    """Check for duplicates and send a new item to Telegram."""
-
     title = " ".join(title.split())
     link = normalize_url(link)
 
@@ -172,9 +164,7 @@ def fetch_federal_reserve():
         )
 
     except Exception as error:
-        print(
-            f"Federal Reserve failed, skipping: {error}"
-        )
+        print(f"Federal Reserve failed, skipping: {error}")
 
 
 # ============================================================
@@ -216,9 +206,7 @@ def fetch_ecb():
 
 def fetch_boj():
     try:
-        feed_url = (
-            "https://www.boj.or.jp/en/rss/whatsnew.xml"
-        )
+        feed_url = "https://www.boj.or.jp/en/rss/whatsnew.xml"
 
         feed_data = download(feed_url)
 
@@ -296,12 +284,7 @@ def fetch_boe():
             if "/news/" not in link.lower():
                 continue
 
-            title = re.sub(
-                r"<[^>]+>",
-                " ",
-                raw_title
-            )
-
+            title = re.sub(r"<[^>]+>", " ", raw_title)
             title = html.unescape(title)
             title = re.sub(r"\s+", " ", title).strip()
 
@@ -342,6 +325,76 @@ def fetch_boe():
 
 
 # ============================================================
+# U.S. Department of the Treasury
+# ============================================================
+
+def fetch_treasury():
+    try:
+        page_url = (
+            "https://home.treasury.gov/news/press-releases"
+        )
+
+        page = download(page_url).decode(
+            "utf-8",
+            errors="ignore"
+        )
+
+        pattern = re.compile(
+            r'href=["\']'
+            r'([^"\']*/news/press-releases/[^"\']+)'
+            r'["\'][^>]*>(.*?)</a>',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        matches = pattern.findall(page)
+
+        selected_link = ""
+        selected_title = ""
+
+        for link, raw_title in matches:
+            title = re.sub(
+                r"<[^>]+>",
+                " ",
+                raw_title
+            )
+
+            title = html.unescape(title)
+            title = re.sub(r"\s+", " ", title).strip()
+
+            if len(title) < 15:
+                continue
+
+            if link.startswith("/"):
+                link = "https://home.treasury.gov" + link
+
+            elif not link.startswith("http"):
+                link = urllib.parse.urljoin(
+                    page_url,
+                    link
+                )
+
+            selected_link = link
+            selected_title = title
+            break
+
+        if not selected_link or not selected_title:
+            raise RuntimeError(
+                "No U.S. Treasury press release found"
+            )
+
+        process_news(
+            "U.S. Department of the Treasury",
+            "🇺🇸",
+            selected_title,
+            selected_link,
+            ".last_treasury_news"
+        )
+
+    except Exception as error:
+        print(f"Treasury failed, skipping: {error}")
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -354,6 +407,7 @@ def main():
     fetch_ecb()
     fetch_boj()
     fetch_boe()
+    fetch_treasury()
 
     print("====================================")
     print("Radar scan complete.")
