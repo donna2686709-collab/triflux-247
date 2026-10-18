@@ -5,11 +5,17 @@ on:
   schedule:
     - cron: "*/10 * * * *"
 
+permissions:
+  contents: write
+
 jobs:
   radar:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Fetch Federal Reserve latest news
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -55,34 +61,61 @@ jobs:
           elif not link.startswith("http"):
               link = urllib.parse.urljoin(page_url, link)
 
-          message = (
-              "🇺🇸 Federal Reserve\n\n"
-              f"📌 {title}\n\n"
-              f"🔗 {link}\n\n"
-              "📡 TriFlux 24/7 Financial Radar"
-          )
+          state_file = ".last_fed_news"
 
-          bot_token = os.environ["BOT_TOKEN"]
-          chat_id = os.environ["CHAT_ID"]
+          previous_link = ""
+          if os.path.exists(state_file):
+              with open(state_file, "r", encoding="utf-8") as f:
+                  previous_link = f.read().strip()
 
-          telegram_url = (
-              f"https://api.telegram.org/bot{bot_token}/sendMessage"
-          )
+          if previous_link == link:
+              print("No new Federal Reserve news.")
+          else:
+              message = (
+                  "🇺🇸 Federal Reserve\n\n"
+                  f"📌 {title}\n\n"
+                  f"🔗 {link}\n\n"
+                  "📡 TriFlux 24/7 Financial Radar"
+              )
 
-          data = urllib.parse.urlencode({
-              "chat_id": chat_id,
-              "text": message,
-              "disable_web_page_preview": "true"
-          }).encode()
+              telegram_url = (
+                  f"https://api.telegram.org/bot"
+                  f"{os.environ['BOT_TOKEN']}/sendMessage"
+              )
 
-          request = urllib.request.Request(
-              telegram_url,
-              data=data,
-              method="POST"
-          )
+              data = urllib.parse.urlencode({
+                  "chat_id": os.environ["CHAT_ID"],
+                  "text": message,
+                  "disable_web_page_preview": "true"
+              }).encode()
 
-          with urllib.request.urlopen(request, timeout=30) as response:
-              result = response.read().decode()
-              print(result)
+              request = urllib.request.Request(
+                  telegram_url,
+                  data=data,
+                  method="POST"
+              )
+
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  print(response.read().decode())
+
+              with open(state_file, "w", encoding="utf-8") as f:
+                  f.write(link)
+
+              print("New Federal Reserve news sent.")
 
           PY
+
+      - name: Save news state
+        run: |
+          if [ -f .last_fed_news ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .last_fed_news
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update Federal Reserve news state"
+              git push
+            else
+              echo "No state change."
+            fi
+          fi
