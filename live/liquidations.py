@@ -2,31 +2,54 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 4 Verification:
+Stage 5:
 - Bybit public WebSocket
 - BTCUSDT / ETHUSDT
 - Persistent ticker state
-- Correct liquidation position-side mapping
 - Rolling 1m / 5m / 15m liquidation totals
 - Risk-level engine
 - Alert cooldown
 - Immediate alert on risk-level escalation
-- Safe startup self-test for escalation logic
+- Safe startup self-test
+- Telegram alerts for REAL market risk only
 
-No Bybit API key is required.
-Telegram sending is NOT enabled yet.
+SELF TEST alerts NEVER go to Telegram.
 """
 
 import asyncio
 import json
+import os
+import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 import websockets
 
 
-BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear"
+# --------------------------------------------------
+# Project root
+# --------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(
+        0,
+        str(PROJECT_ROOT),
+    )
+
+from core.telegram import send_telegram
+
+
+# --------------------------------------------------
+# Configuration
+# --------------------------------------------------
+
+BYBIT_WS_URL = (
+    "wss://stream.bybit.com/v5/public/linear"
+)
 
 SYMBOLS = [
     "BTCUSDT",
@@ -63,8 +86,19 @@ RISK_RANK = {
     "CRITICAL": 4,
 }
 
+RISK_EMOJI = {
+    "WATCH": "🟡",
+    "MEDIUM": "🟠",
+    "HIGH": "🔴",
+    "CRITICAL": "🚨",
+}
+
 ALERT_COOLDOWN_SECONDS = 300
 
+
+# --------------------------------------------------
+# Runtime state
+# --------------------------------------------------
 
 ticker_state = {
     symbol: {}
@@ -87,8 +121,14 @@ alert_state = {
 liquidation_events = deque()
 
 
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
+
 def utc_now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
 
 def safe_float(value):
@@ -102,25 +142,60 @@ def format_money(value):
     return f"${value:,.2f}"
 
 
-def liquidation_value(price, size):
-    return safe_float(price) * safe_float(size)
+def format_price(value):
+    number = safe_float(value)
 
+    if number <= 0:
+        return "N/A"
+
+    return f"${number:,.2f}"
+
+
+def format_funding(value):
+    number = safe_float(value)
+
+    return f"{number * 100:.4f}%"
+
+
+def liquidation_value(
+    price,
+    size,
+):
+    return (
+        safe_float(price)
+        * safe_float(size)
+    )
+
+
+# --------------------------------------------------
+# Rolling liquidation calculations
+# --------------------------------------------------
 
 def cleanup_liquidations(now):
     oldest_allowed = (
-        now - max(ROLLING_WINDOWS.values())
+        now
+        - max(
+            ROLLING_WINDOWS.values()
+        )
     )
 
     while liquidation_events:
         event = liquidation_events[0]
 
-        if event["time"] >= oldest_allowed:
+        if (
+            event["time"]
+            >= oldest_allowed
+        ):
             break
 
         liquidation_events.popleft()
 
 
-def calculate_window(symbol, seconds, now):
+def calculate_window(
+    symbol,
+    seconds,
+    now,
+):
     long_value = 0.0
     short_value = 0.0
     event_count = 0
@@ -139,21 +214,36 @@ def calculate_window(symbol, seconds, now):
         if event["position"] == "LONG":
             long_value += event["value"]
 
-        elif event["position"] == "SHORT":
+        elif (
+            event["position"]
+            == "SHORT"
+        ):
             short_value += event["value"]
 
     return {
         "long": long_value,
         "short": short_value,
-        "total": long_value + short_value,
+        "total": (
+            long_value
+            + short_value
+        ),
         "count": event_count,
     }
 
 
-def get_risk_level(symbol, total_value):
-    thresholds = ALERT_THRESHOLDS.get(
-        symbol,
-        {},
+# --------------------------------------------------
+# Risk engine
+# --------------------------------------------------
+
+def get_risk_level(
+    symbol,
+    total_value,
+):
+    thresholds = (
+        ALERT_THRESHOLDS.get(
+            symbol,
+            {},
+        )
     )
 
     if total_value >= thresholds.get(
@@ -184,16 +274,26 @@ def get_risk_level(symbol, total_value):
 
 
 def dominant_side(stats):
-    if stats["long"] > stats["short"]:
+    if (
+        stats["long"]
+        > stats["short"]
+    ):
         return "LONG"
 
-    if stats["short"] > stats["long"]:
+    if (
+        stats["short"]
+        > stats["long"]
+    ):
         return "SHORT"
 
     return "BALANCED"
 
 
-def should_alert(symbol, new_level, now):
+def should_alert(
+    symbol,
+    new_level,
+    now,
+):
     state = alert_state[symbol]
 
     previous_level = state["level"]
@@ -212,6 +312,7 @@ def should_alert(symbol, new_level, now):
         0,
     )
 
+    # Risk escalation bypasses cooldown.
     if new_rank > previous_rank:
         return True, "ESCALATION"
 
@@ -219,15 +320,182 @@ def should_alert(symbol, new_level, now):
         now - previous_time
         >= ALERT_COOLDOWN_SECONDS
     ):
-        return True, "COOLDOWN_EXPIRED"
+        return (
+            True,
+            "COOLDOWN_EXPIRED",
+        )
 
     return False, "COOLDOWN"
 
 
-def maybe_print_risk_alert(
+# --------------------------------------------------
+# Telegram
+# --------------------------------------------------
+
+def build_telegram_alert(
+    symbol,
+    level,
+    stats,
+    reason,
+):
+    state = ticker_state.get(
+        symbol,
+        {},
+    )
+
+    emoji = RISK_EMOJI.get(
+        level,
+        "⚠️",
+    )
+
+    side = dominant_side(
+        stats
+    )
+
+    price = format_price(
+        state.get(
+            "lastPrice"
+        )
+    )
+
+    mark_price = format_price(
+        state.get(
+            "markPrice"
+        )
+    )
+
+    oi_value = format_money(
+        safe_float(
+            state.get(
+                "openInterestValue"
+            )
+        )
+    )
+
+    funding = format_funding(
+        state.get(
+            "fundingRate"
+        )
+    )
+
+    if side == "LONG":
+        pressure = (
+            "Long liquidation pressure"
+        )
+
+    elif side == "SHORT":
+        pressure = (
+            "Short liquidation pressure"
+        )
+
+    else:
+        pressure = (
+            "Balanced liquidation pressure"
+        )
+
+    if reason == "ESCALATION":
+        trigger = "Risk level escalated"
+    elif reason == "NEW":
+        trigger = "New risk signal"
+    else:
+        trigger = (
+            "Risk signal remains active"
+        )
+
+    lines = [
+        (
+            f"{emoji} CRYPTO "
+            "LIQUIDATION ALERT"
+        ),
+        "",
+        f"{level} | {symbol}",
+        "",
+        (
+            "1m Liquidations: "
+            f"{format_money(stats['total'])}"
+        ),
+        (
+            "LONG: "
+            f"{format_money(stats['long'])}"
+        ),
+        (
+            "SHORT: "
+            f"{format_money(stats['short'])}"
+        ),
+        (
+            "Dominant: "
+            f"{side}"
+        ),
+        (
+            "Events: "
+            f"{stats['count']}"
+        ),
+        "",
+        f"Price: {price}",
+        f"Mark: {mark_price}",
+        f"Open Interest: {oi_value}",
+        f"Funding: {funding}",
+        "",
+        pressure,
+        f"Trigger: {trigger}",
+        "",
+        "Source: Bybit",
+        "TriFlux 24/7",
+    ]
+
+    return "\n".join(lines)
+
+
+def send_real_market_alert(
+    symbol,
+    level,
+    stats,
+    reason,
+):
+    message = build_telegram_alert(
+        symbol,
+        level,
+        stats,
+        reason,
+    )
+
+    try:
+        send_telegram(
+            message
+        )
+
+        print(
+            f"[{utc_now()}] "
+            "TELEGRAM SENT | "
+            f"{level} | "
+            f"{symbol}",
+            flush=True,
+        )
+
+        return True
+
+    except Exception as exc:
+        # Telegram failure must not stop
+        # the live market listener.
+        print(
+            f"[{utc_now()}] "
+            "TELEGRAM ERROR | "
+            f"{type(exc).__name__}: "
+            f"{exc}",
+            flush=True,
+        )
+
+        return False
+
+
+# --------------------------------------------------
+# Alert handling
+# --------------------------------------------------
+
+def maybe_process_risk_alert(
     symbol,
     stats,
-    prefix="RISK ALERT",
+    self_test=False,
 ):
     level = get_risk_level(
         symbol,
@@ -248,23 +516,33 @@ def maybe_print_risk_alert(
     if not allowed:
         return False
 
-    previous_level = alert_state[
-        symbol
-    ]["level"]
+    previous_level = (
+        alert_state[
+            symbol
+        ]["level"]
+    )
 
     alert_state[symbol] = {
         "time": now,
         "level": level,
     }
 
-    side = dominant_side(stats)
+    side = dominant_side(
+        stats
+    )
 
     if reason == "ESCALATION":
         transition = (
-            f"{previous_level}->{level}"
+            f"{previous_level}"
+            f"->{level}"
         )
     else:
         transition = level
+
+    if self_test:
+        prefix = "SELF TEST ALERT"
+    else:
+        prefix = "RISK ALERT"
 
     print(
         f"[{utc_now()}] "
@@ -273,19 +551,34 @@ def maybe_print_risk_alert(
         f"{symbol} | "
         f"reason={reason} | "
         f"transition={transition} | "
-        f"1m liquidation="
+        "1m liquidation="
         f"{format_money(stats['total'])} | "
-        f"LONG="
+        "LONG="
         f"{format_money(stats['long'])} | "
-        f"SHORT="
+        "SHORT="
         f"{format_money(stats['short'])} | "
         f"dominant={side} | "
         f"events={stats['count']}",
         flush=True,
     )
 
+    # CRITICAL SAFETY RULE:
+    # simulated self-test data is NEVER
+    # sent to Telegram.
+    if not self_test:
+        send_real_market_alert(
+            symbol,
+            level,
+            stats,
+            reason,
+        )
+
     return True
 
+
+# --------------------------------------------------
+# Safe deterministic self-test
+# --------------------------------------------------
 
 def run_escalation_self_test():
     test_symbol = "ETHUSDT"
@@ -301,7 +594,15 @@ def run_escalation_self_test():
 
     print(
         "TRIFLUX SELF TEST: "
-        "risk escalation bypasses cooldown",
+        "risk escalation bypasses "
+        "cooldown",
+        flush=True,
+    )
+
+    print(
+        "SELF TEST SAFETY: "
+        "Telegram disabled for "
+        "simulated alerts.",
         flush=True,
     )
 
@@ -332,8 +633,13 @@ def run_escalation_self_test():
     passed = True
 
     for test_case in test_cases:
-        expected = test_case["expected"]
-        total = test_case["total"]
+        expected = (
+            test_case["expected"]
+        )
+
+        total = (
+            test_case["total"]
+        )
 
         detected = get_risk_level(
             test_symbol,
@@ -347,25 +653,28 @@ def run_escalation_self_test():
             "count": 10,
         }
 
-        printed = maybe_print_risk_alert(
-            test_symbol,
-            stats,
-            prefix="SELF TEST ALERT",
+        processed = (
+            maybe_process_risk_alert(
+                test_symbol,
+                stats,
+                self_test=True,
+            )
         )
 
         if (
             detected != expected
-            or not printed
+            or not processed
         ):
             passed = False
 
             print(
-                f"SELF TEST FAILURE | "
+                "SELF TEST FAILURE | "
                 f"expected={expected} | "
                 f"detected={detected}",
                 flush=True,
             )
 
+    # Restore real market alert state.
     alert_state[test_symbol] = (
         original_state
     )
@@ -374,9 +683,11 @@ def run_escalation_self_test():
         print(
             "SELF TEST RESULT: PASS | "
             "WATCH -> MEDIUM -> HIGH -> "
-            "CRITICAL escalation confirmed.",
+            "CRITICAL escalation "
+            "confirmed.",
             flush=True,
         )
+
     else:
         print(
             "SELF TEST RESULT: FAIL",
@@ -384,7 +695,8 @@ def run_escalation_self_test():
         )
 
         raise RuntimeError(
-            "Risk escalation self-test failed."
+            "Risk escalation "
+            "self-test failed."
         )
 
     print(
@@ -393,10 +705,18 @@ def run_escalation_self_test():
     )
 
 
-def print_liquidation_summary(symbol):
+# --------------------------------------------------
+# Liquidation summaries
+# --------------------------------------------------
+
+def print_liquidation_summary(
+    symbol,
+):
     now = time.time()
 
-    cleanup_liquidations(now)
+    cleanup_liquidations(
+        now
+    )
 
     summaries = {}
     parts = []
@@ -414,28 +734,33 @@ def print_liquidation_summary(symbol):
 
         parts.append(
             f"{label}: "
-            f"LONG="
+            "LONG="
             f"{format_money(stats['long'])} | "
-            f"SHORT="
+            "SHORT="
             f"{format_money(stats['short'])} | "
-            f"TOTAL="
+            "TOTAL="
             f"{format_money(stats['total'])} | "
             f"events={stats['count']}"
         )
 
     print(
         f"[{utc_now()}] "
-        f"LIQUIDATION ROLLING | "
+        "LIQUIDATION ROLLING | "
         f"{symbol} | "
         + " || ".join(parts),
         flush=True,
     )
 
-    maybe_print_risk_alert(
+    maybe_process_risk_alert(
         symbol,
         summaries["1m"],
+        self_test=False,
     )
 
+
+# --------------------------------------------------
+# Bybit subscription
+# --------------------------------------------------
 
 async def subscribe(websocket):
     topics = []
@@ -459,31 +784,50 @@ async def subscribe(websocket):
     )
 
     print(
-        "TriFlux Live Radar subscribed to: "
+        "TriFlux Live Radar "
+        "subscribed to: "
         + ", ".join(topics),
         flush=True,
     )
 
 
-def update_ticker_state(topic, data):
-    if not isinstance(data, dict):
+# --------------------------------------------------
+# Ticker
+# --------------------------------------------------
+
+def update_ticker_state(
+    topic,
+    data,
+):
+    if not isinstance(
+        data,
+        dict,
+    ):
         return
 
-    symbol = data.get("symbol")
+    symbol = data.get(
+        "symbol"
+    )
 
     if not symbol:
-        symbol = topic.split(".")[-1]
+        symbol = (
+            topic.split(".")[-1]
+        )
 
     if symbol not in ticker_state:
         ticker_state[symbol] = {}
 
-    ticker_state[symbol].update(data)
+    ticker_state[symbol].update(
+        data
+    )
 
     now = time.monotonic()
 
-    previous = last_heartbeat.get(
-        symbol,
-        0.0,
+    previous = (
+        last_heartbeat.get(
+            symbol,
+            0.0,
+        )
     )
 
     if (
@@ -498,37 +842,50 @@ def update_ticker_state(topic, data):
 
     print(
         f"[{utc_now()}] "
-        f"MARKET HEARTBEAT | "
+        "MARKET HEARTBEAT | "
         f"{symbol} | "
-        f"last="
+        "last="
         f"{state.get('lastPrice', 'N/A')} | "
-        f"mark="
+        "mark="
         f"{state.get('markPrice', 'N/A')} | "
-        f"index="
+        "index="
         f"{state.get('indexPrice', 'N/A')} | "
-        f"OI="
+        "OI="
         f"{state.get('openInterest', 'N/A')} | "
-        f"OI_value="
+        "OI_value="
         f"{state.get('openInterestValue', 'N/A')} | "
-        f"funding="
+        "funding="
         f"{state.get('fundingRate', 'N/A')} | "
-        f"turnover24h="
+        "turnover24h="
         f"{state.get('turnover24h', 'N/A')} | "
-        f"volume24h="
+        "volume24h="
         f"{state.get('volume24h', 'N/A')}",
         flush=True,
     )
 
 
+# --------------------------------------------------
+# Liquidations
+# --------------------------------------------------
+
 def handle_liquidation(data):
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict,
+    ):
         data = [data]
 
-    if not isinstance(data, list):
+    if not isinstance(
+        data,
+        list,
+    ):
         return
 
     for item in data:
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict,
+        ):
             continue
 
         symbol = item.get(
@@ -560,20 +917,32 @@ def handle_liquidation(data):
         # Buy  = LONG position liquidated
         # Sell = SHORT position liquidated
         if side == "Buy":
-            liquidated_position = "LONG"
+            liquidated_position = (
+                "LONG"
+            )
 
         elif side == "Sell":
-            liquidated_position = "SHORT"
+            liquidated_position = (
+                "SHORT"
+            )
 
         else:
-            liquidated_position = "UNKNOWN"
+            liquidated_position = (
+                "UNKNOWN"
+            )
 
         event = {
             "time": time.time(),
             "symbol": symbol,
-            "position": liquidated_position,
-            "price": safe_float(price),
-            "size": safe_float(size),
+            "position": (
+                liquidated_position
+            ),
+            "price": safe_float(
+                price
+            ),
+            "size": safe_float(
+                size
+            ),
             "value": value,
         }
 
@@ -587,12 +956,13 @@ def handle_liquidation(data):
 
         print(
             f"[{utc_now()}] "
-            f"LIQUIDATION | "
+            "LIQUIDATION | "
             f"{symbol} | "
             f"{liquidated_position} | "
             f"price={price} | "
             f"size={size} | "
-            f"value={format_money(value)}",
+            "value="
+            f"{format_money(value)}",
             flush=True,
         )
 
@@ -600,6 +970,10 @@ def handle_liquidation(data):
             symbol
         )
 
+
+# --------------------------------------------------
+# Incoming WebSocket messages
+# --------------------------------------------------
 
 async def handle_message(message):
     try:
@@ -610,13 +984,16 @@ async def handle_message(message):
     except json.JSONDecodeError:
         return
 
-    if payload.get("op") == "subscribe":
+    if (
+        payload.get("op")
+        == "subscribe"
+    ):
         print(
             f"[{utc_now()}] "
-            f"SUBSCRIPTION RESPONSE | "
-            f"success="
+            "SUBSCRIPTION RESPONSE | "
+            "success="
             f"{payload.get('success')} | "
-            f"message="
+            "message="
             f"{payload.get('ret_msg', '')}",
             flush=True,
         )
@@ -650,6 +1027,10 @@ async def handle_message(message):
         )
 
 
+# --------------------------------------------------
+# Main live loop
+# --------------------------------------------------
+
 async def run():
     run_escalation_self_test()
 
@@ -660,23 +1041,32 @@ async def run():
 
     print(
         "TriFlux 24/7 "
-        "Global Crypto Liquidation Radar",
+        "Global Crypto "
+        "Liquidation Radar",
         flush=True,
     )
 
     print(
-        "Source: Bybit Public WebSocket",
+        "Source: Bybit "
+        "Public WebSocket",
         flush=True,
     )
 
     print(
-        "Markets: BTCUSDT, ETHUSDT",
+        "Markets: "
+        "BTCUSDT, ETHUSDT",
         flush=True,
     )
 
     print(
-        "Stage 4 Verification: "
-        "self-test + live market data",
+        "Stage 5: "
+        "REAL risk alerts -> Telegram",
+        flush=True,
+    )
+
+    print(
+        "SELF TEST alerts -> "
+        "LOG ONLY",
         flush=True,
     )
 
@@ -716,14 +1106,15 @@ async def run():
         except Exception as exc:
             print(
                 f"[{utc_now()}] "
-                f"WebSocket error: "
+                "WebSocket error: "
                 f"{type(exc).__name__}: "
                 f"{exc}",
                 flush=True,
             )
 
             print(
-                "Reconnecting in 5 seconds...",
+                "Reconnecting in "
+                "5 seconds...",
                 flush=True,
             )
 
@@ -738,6 +1129,7 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print(
-            "TriFlux Live Radar stopped.",
+            "TriFlux Live Radar "
+            "stopped.",
             flush=True,
         )
