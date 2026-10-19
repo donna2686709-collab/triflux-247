@@ -20,6 +20,10 @@ from monitors.liquidity import (
     fetch_on_rrp,
 )
 
+from monitors.market_events import (
+    fetch_nasdaq_trading_halts,
+)
+
 from monitors.treasury import (
     fetch_treasury_tic,
 )
@@ -1383,9 +1387,12 @@ def main():
     # SEC filing monitoring
     fetch_sec_filings()
 
-        # CFTC positioning and New York Fed liquidity
+            # CFTC positioning and New York Fed liquidity
     fetch_sofr()
     fetch_on_rrp()
+
+    # U.S. stock market events
+    fetch_nasdaq_trading_halts()
 
     print(
         "===================================="
