@@ -1180,7 +1180,7 @@ def fetch_sec_form(
         )
 
 
-def fetch_sec_filings_modular()
+def fetch_sec_filings():
     if not SEC_USER_AGENT:
         print(
             "SEC filings skipped: "
@@ -1391,7 +1391,7 @@ def main():
     fetch_bea()
 
     # SEC filing monitoring
-    fetch_sec_filings()
+    fetch_sec_filings_modular()
 
             # CFTC positioning and New York Fed liquidity
     fetch_sofr()
