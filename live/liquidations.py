@@ -2,15 +2,17 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 2:
+Stage 3:
 - Bybit public WebSocket
 - BTCUSDT / ETHUSDT
 - Persistent ticker state
-- Real-time liquidation capture
+- Correct Bybit liquidation position-side mapping
 - Rolling 1m / 5m / 15m liquidation totals
+- Preliminary risk-level engine
+- Alert cooldown preparation
 
 No Bybit API key is required.
-No Telegram messages are sent in this stage.
+Telegram sending is NOT enabled yet.
 """
 
 import asyncio
@@ -37,6 +39,25 @@ ROLLING_WINDOWS = {
     "15m": 900,
 }
 
+# Preliminary alert thresholds.
+# We will calibrate these with live data before Telegram is enabled.
+ALERT_THRESHOLDS = {
+    "BTCUSDT": {
+        "WATCH": 50_000,
+        "MEDIUM": 150_000,
+        "HIGH": 500_000,
+        "CRITICAL": 1_500_000,
+    },
+    "ETHUSDT": {
+        "WATCH": 30_000,
+        "MEDIUM": 100_000,
+        "HIGH": 300_000,
+        "CRITICAL": 1_000_000,
+    },
+}
+
+ALERT_COOLDOWN_SECONDS = 300
+
 
 ticker_state = {
     symbol: {}
@@ -44,6 +65,11 @@ ticker_state = {
 }
 
 last_heartbeat = {
+    symbol: 0.0
+    for symbol in SYMBOLS
+}
+
+last_alert_time = {
     symbol: 0.0
     for symbol in SYMBOLS
 }
@@ -71,7 +97,9 @@ def liquidation_value(price, size):
 
 
 def cleanup_liquidations(now):
-    oldest_allowed = now - max(ROLLING_WINDOWS.values())
+    oldest_allowed = now - max(
+        ROLLING_WINDOWS.values()
+    )
 
     while liquidation_events:
         event = liquidation_events[0]
@@ -104,20 +132,107 @@ def calculate_window(symbol, seconds, now):
         elif event["position"] == "SHORT":
             short_value += event["value"]
 
-    total_value = long_value + short_value
-
     return {
         "long": long_value,
         "short": short_value,
-        "total": total_value,
+        "total": long_value + short_value,
         "count": event_count,
     }
+
+
+def get_risk_level(symbol, total_value):
+    thresholds = ALERT_THRESHOLDS.get(
+        symbol,
+        {},
+    )
+
+    if total_value >= thresholds.get(
+        "CRITICAL",
+        float("inf"),
+    ):
+        return "CRITICAL"
+
+    if total_value >= thresholds.get(
+        "HIGH",
+        float("inf"),
+    ):
+        return "HIGH"
+
+    if total_value >= thresholds.get(
+        "MEDIUM",
+        float("inf"),
+    ):
+        return "MEDIUM"
+
+    if total_value >= thresholds.get(
+        "WATCH",
+        float("inf"),
+    ):
+        return "WATCH"
+
+    return None
+
+
+def dominant_side(stats):
+    long_value = stats["long"]
+    short_value = stats["short"]
+
+    if long_value > short_value:
+        return "LONG"
+
+    if short_value > long_value:
+        return "SHORT"
+
+    return "BALANCED"
+
+
+def maybe_print_risk_alert(symbol, stats):
+    level = get_risk_level(
+        symbol,
+        stats["total"],
+    )
+
+    if level is None:
+        return
+
+    now = time.time()
+
+    previous_alert = last_alert_time.get(
+        symbol,
+        0.0,
+    )
+
+    if (
+        now - previous_alert
+        < ALERT_COOLDOWN_SECONDS
+    ):
+        return
+
+    last_alert_time[symbol] = now
+
+    side = dominant_side(stats)
+
+    print(
+        f"[{utc_now()}] "
+        f"RISK ALERT | "
+        f"{level} | "
+        f"{symbol} | "
+        f"1m liquidation="
+        f"{format_money(stats['total'])} | "
+        f"LONG={format_money(stats['long'])} | "
+        f"SHORT={format_money(stats['short'])} | "
+        f"dominant={side} | "
+        f"events={stats['count']}",
+        flush=True,
+    )
 
 
 def print_liquidation_summary(symbol):
     now = time.time()
 
     cleanup_liquidations(now)
+
+    summaries = {}
 
     parts = []
 
@@ -127,6 +242,8 @@ def print_liquidation_summary(symbol):
             seconds,
             now,
         )
+
+        summaries[label] = stats
 
         parts.append(
             f"{label}: "
@@ -142,6 +259,11 @@ def print_liquidation_summary(symbol):
         f"{symbol} | "
         + " || ".join(parts),
         flush=True,
+    )
+
+    maybe_print_risk_alert(
+        symbol,
+        summaries["1m"],
     )
 
 
@@ -188,6 +310,7 @@ def update_ticker_state(topic, data):
     ticker_state[symbol].update(data)
 
     now = time.monotonic()
+
     previous = last_heartbeat.get(
         symbol,
         0.0,
@@ -203,58 +326,21 @@ def update_ticker_state(topic, data):
 
     state = ticker_state[symbol]
 
-    last_price = state.get(
-        "lastPrice",
-        "N/A",
-    )
-
-    mark_price = state.get(
-        "markPrice",
-        "N/A",
-    )
-
-    index_price = state.get(
-        "indexPrice",
-        "N/A",
-    )
-
-    open_interest = state.get(
-        "openInterest",
-        "N/A",
-    )
-
-    open_interest_value = state.get(
-        "openInterestValue",
-        "N/A",
-    )
-
-    funding_rate = state.get(
-        "fundingRate",
-        "N/A",
-    )
-
-    turnover_24h = state.get(
-        "turnover24h",
-        "N/A",
-    )
-
-    volume_24h = state.get(
-        "volume24h",
-        "N/A",
-    )
-
     print(
         f"[{utc_now()}] "
         f"MARKET HEARTBEAT | "
         f"{symbol} | "
-        f"last={last_price} | "
-        f"mark={mark_price} | "
-        f"index={index_price} | "
-        f"OI={open_interest} | "
-        f"OI_value={open_interest_value} | "
-        f"funding={funding_rate} | "
-        f"turnover24h={turnover_24h} | "
-        f"volume24h={volume_24h}",
+        f"last={state.get('lastPrice', 'N/A')} | "
+        f"mark={state.get('markPrice', 'N/A')} | "
+        f"index={state.get('indexPrice', 'N/A')} | "
+        f"OI={state.get('openInterest', 'N/A')} | "
+        f"OI_value="
+        f"{state.get('openInterestValue', 'N/A')} | "
+        f"funding={state.get('fundingRate', 'N/A')} | "
+        f"turnover24h="
+        f"{state.get('turnover24h', 'N/A')} | "
+        f"volume24h="
+        f"{state.get('volume24h', 'N/A')}",
         flush=True,
     )
 
@@ -295,11 +381,14 @@ def handle_liquidation(data):
             size,
         )
 
+        # Bybit allLiquidation official semantics:
+        # S = Buy  -> LONG position liquidated
+        # S = Sell -> SHORT position liquidated
         if side == "Buy":
-            liquidated_position = "SHORT"
+            liquidated_position = "LONG"
 
         elif side == "Sell":
-            liquidated_position = "LONG"
+            liquidated_position = "SHORT"
 
         else:
             liquidated_position = "UNKNOWN"
@@ -347,14 +436,10 @@ async def handle_message(message):
         return
 
     if payload.get("op") == "subscribe":
-        success = payload.get(
-            "success"
-        )
-
         print(
             f"[{utc_now()}] "
             f"SUBSCRIPTION RESPONSE | "
-            f"success={success} | "
+            f"success={payload.get('success')} | "
             f"message="
             f"{payload.get('ret_msg', '')}",
             flush=True,
@@ -402,21 +487,18 @@ async def run():
     )
 
     print(
-        "Source: "
-        "Bybit Public WebSocket",
+        "Source: Bybit Public WebSocket",
         flush=True,
     )
 
     print(
-        "Markets: "
-        "BTCUSDT, ETHUSDT",
+        "Markets: BTCUSDT, ETHUSDT",
         flush=True,
     )
 
     print(
-        "Stage 2: "
-        "persistent ticker state + "
-        "1m/5m/15m liquidation rolling totals",
+        "Stage 3: corrected position side + "
+        "rolling totals + risk engine",
         flush=True,
     )
 
@@ -463,8 +545,7 @@ async def run():
             )
 
             print(
-                "Reconnecting in "
-                "5 seconds...",
+                "Reconnecting in 5 seconds...",
                 flush=True,
             )
 
