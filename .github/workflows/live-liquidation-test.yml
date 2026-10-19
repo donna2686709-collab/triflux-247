@@ -2,6 +2,12 @@ name: Live Crypto Liquidation Test
 
 on:
   workflow_dispatch:
+    inputs:
+      telegram_test:
+        description: "Send one TEST message to Telegram"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -23,5 +29,30 @@ jobs:
       - name: Install websockets
         run: pip install websockets
 
+      - name: Send Telegram TEST message
+        if: ${{ inputs.telegram_test }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          from core.telegram import send_telegram
+
+          message = """🧪 TRIFLUX TELEGRAM TEST
+
+TEST MESSAGE — NOT A REAL MARKET ALERT
+
+Global Crypto Liquidation Radar
+Telegram delivery path verified.
+
+TriFlux 24/7"""
+
+          send_telegram(message)
+          print("TELEGRAM TEST: PASS")
+          PY
+
       - name: Test live liquidation stream
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
         run: timeout 180 python3 -u live/liquidations.py || test $? -eq 124
