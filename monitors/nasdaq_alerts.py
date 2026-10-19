@@ -7,38 +7,25 @@ from core.state import read_state, write_state
 from core.telegram import send_one
 
 
-NASDAQ_ALERT_FEEDS = [
-    (
-        "Nasdaq Equity Trader Alerts",
-        "https://www.nasdaqtrader.com/rss.aspx?feed=tradealerts",
-    ),
-    (
-        "Nasdaq Regulatory Alerts",
-        "https://www.nasdaqtrader.com/rss.aspx?feed=regulatoryalerts",
-    ),
-    (
-        "Nasdaq Technical Updates",
-        "https://www.nasdaqtrader.com/rss.aspx?feed=technicalupdates",
-    ),
-]
-
-
-def _to_text(raw):
-    if isinstance(raw, bytes):
-        return raw.decode(
-            "utf-8",
-            errors="replace",
-        )
-
-    return str(raw or "")
+NASDAQ_EQUITY_ALERTS_URL = (
+    "https://www.nasdaqtrader.com/"
+    "Trader.aspx?id=EquityTraderAlerts"
+)
 
 
 def _clean_text(value):
     value = re.sub(
-        r"<!\[CDATA\[(.*?)\]\]>",
-        r"\1",
+        r"<script\b[^>]*>.*?</script>",
+        " ",
         str(value or ""),
-        flags=re.DOTALL,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    value = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        " ",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
     )
 
     value = re.sub(
@@ -56,50 +43,74 @@ def _clean_text(value):
     )
 
 
-def _extract_tag(block, tag):
-    patterns = [
-        rf"<{tag}\b[^>]*>(.*?)</{tag}>",
-        rf"<[A-Za-z0-9_-]+:{tag}\b[^>]*>"
-        rf"(.*?)"
-        rf"</[A-Za-z0-9_-]+:{tag}>",
-    ]
+def _extract_alerts(raw):
+    if isinstance(raw, bytes):
+        text = raw.decode(
+            "utf-8",
+            errors="replace",
+        )
+    else:
+        text = str(raw or "")
 
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            block,
-            flags=(
-                re.IGNORECASE
-                | re.DOTALL
-            ),
+    rows = []
+
+    link_pattern = re.compile(
+        r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>'
+        r'(.*?)'
+        r'</a>',
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for match in link_pattern.finditer(text):
+        href = html.unescape(
+            match.group(1)
+        ).strip()
+
+        title = _clean_text(
+            match.group(2)
         )
 
-        if match:
-            return _clean_text(
-                match.group(1)
-            )
+        if not title:
+            continue
 
-    return ""
+        title_lower = title.lower()
 
+        if (
+            "equity trader alert" not in title_lower
+            and "equity regulatory alert" not in title_lower
+            and "equity technical update" not in title_lower
+        ):
+            continue
 
-def _extract_items(raw):
-    text = _to_text(raw)
+        link = urllib.parse.urljoin(
+            NASDAQ_EQUITY_ALERTS_URL,
+            href,
+        )
 
-    text = text.replace(
-        "\x00",
-        "",
-    )
+        stable_id = link
 
-    matches = re.findall(
-        r"<item\b[^>]*>(.*?)</item>",
-        text,
-        flags=(
-            re.IGNORECASE
-            | re.DOTALL
-        ),
-    )
+        rows.append({
+            "id": stable_id,
+            "title": title,
+            "link": link,
+        })
 
-    return matches
+    unique_rows = []
+    seen_ids = set()
+
+    for row in rows:
+        if row["id"] in seen_ids:
+            continue
+
+        seen_ids.add(
+            row["id"]
+        )
+
+        unique_rows.append(
+            row
+        )
+
+    return unique_rows
 
 
 def fetch_nasdaq_equity_alerts():
@@ -107,113 +118,23 @@ def fetch_nasdaq_equity_alerts():
     state_file = ".last_nasdaq_equity_alerts"
 
     try:
-        all_rows = []
+        raw = download(
+            NASDAQ_EQUITY_ALERTS_URL
+        )
 
-        for feed_name, url in NASDAQ_ALERT_FEEDS:
-            try:
-                raw = download(
-                    url
-                )
+        rows = _extract_alerts(
+            raw
+        )
 
-                raw_text = _to_text(
-                    raw
-                )
+        print(
+            "Nasdaq Equity Alerts: "
+            f"found {len(rows)} official alert(s)."
+        )
 
-                print(
-                    f"{feed_name}: "
-                    f"response length={len(raw_text)}, "
-                    f"first 300 chars="
-                    f"{repr(raw_text[:300])}"
-                )
-
-                items = _extract_items(
-                    raw
-                )
-
-                print(
-                    f"{feed_name}: "
-                    f"found {len(items)} alert(s)."
-                )
-
-                for item in items:
-                    title = _extract_tag(
-                        item,
-                        "title",
-                    )
-
-                    link = _extract_tag(
-                        item,
-                        "link",
-                    )
-
-                    guid = _extract_tag(
-                        item,
-                        "guid",
-                    )
-
-                    pub_date = _extract_tag(
-                        item,
-                        "pubDate",
-                    )
-
-                    description = _extract_tag(
-                        item,
-                        "description",
-                    )
-
-                    if not title:
-                        continue
-
-                    if link:
-                        link = urllib.parse.urljoin(
-                            url,
-                            link,
-                        )
-
-                    stable_id = (
-                        guid
-                        or link
-                        or (
-                            f"{feed_name}:"
-                            f"{pub_date}:"
-                            f"{title}"
-                        )
-                    )
-
-                    all_rows.append({
-                        "id": stable_id,
-                        "feed": feed_name,
-                        "title": title,
-                        "link": link,
-                        "pub_date": pub_date,
-                        "description": description,
-                    })
-
-            except Exception as feed_error:
-                print(
-                    f"{feed_name} failed, "
-                    f"skipping: {feed_error}"
-                )
-
-        if not all_rows:
+        if not rows:
             raise RuntimeError(
-                "Nasdaq alert feeds returned "
-                "no usable alerts"
-            )
-
-        unique_rows = []
-        seen_ids = set()
-
-        for row in all_rows:
-            if row["id"] in seen_ids:
-                continue
-
-            seen_ids.add(
-                row["id"]
-            )
-
-            unique_rows.append(
-                row
+                "Nasdaq Equity Alerts page "
+                "returned no usable alerts"
             )
 
         state = read_state(
@@ -222,7 +143,7 @@ def fetch_nasdaq_equity_alerts():
 
         current_ids = [
             row["id"]
-            for row in unique_rows
+            for row in rows
         ]
 
         if not state["initialized"]:
@@ -234,7 +155,7 @@ def fetch_nasdaq_equity_alerts():
             print(
                 "Nasdaq Equity Alerts: "
                 "initialized baseline with "
-                f"{len(unique_rows)} alert(s); "
+                f"{len(rows)} alert(s); "
                 "no historical messages sent."
             )
 
@@ -246,7 +167,7 @@ def fetch_nasdaq_equity_alerts():
 
         unseen = [
             row
-            for row in unique_rows
+            for row in rows
             if row["id"] not in known
         ]
 
@@ -257,38 +178,44 @@ def fetch_nasdaq_equity_alerts():
             return
 
         for row in reversed(unseen):
-            details = [
-                f"Category: {row['feed']}",
-            ]
+            title_lower = row[
+                "title"
+            ].lower()
 
-            if row["pub_date"]:
-                details.append(
-                    f"Published: {row['pub_date']}"
+            if "regulatory" in title_lower:
+                category = (
+                    "Equity Regulatory Alert"
                 )
+                emoji = "🚨"
 
-            if row["description"]:
-                details.append(
-                    "Summary: "
-                    f"{row['description'][:800]}"
+            elif "technical" in title_lower:
+                category = (
+                    "Equity Technical Update"
                 )
+                emoji = "🟠"
 
-            details.append(
-                "Source: Nasdaq Trader official alert feed"
-            )
+            else:
+                category = (
+                    "Equity Trader Alert"
+                )
+                emoji = "🔴"
+
+            details = "\n".join([
+                f"Category: {category}",
+                (
+                    "Source: Nasdaq Trader "
+                    "official Equity Alerts"
+                ),
+            ])
 
             send_one(
                 source,
-                "🚨",
+                emoji,
                 row["title"],
-                (
-                    row["link"]
-                    or "https://www.nasdaqtrader.com/"
-                ),
+                row["link"],
                 state_file,
                 item_id=row["id"],
-                details="\n".join(
-                    details
-                ),
+                details=details,
             )
 
         updated_ids = (
