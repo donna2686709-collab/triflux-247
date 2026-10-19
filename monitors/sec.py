@@ -1,3 +1,4 @@
+import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -165,6 +166,47 @@ SEC_FORMS = [
 ]
 
 
+def _title_form_type(title):
+    if not title:
+        return ""
+
+    match = re.match(
+        r"^\s*(.*?)\s+-\s+",
+        title,
+    )
+
+    if not match:
+        return ""
+
+    return (
+        " ".join(
+            match.group(1).split()
+        )
+        .upper()
+    )
+
+
+def _form_matches(
+    title,
+    expected_form,
+):
+    actual_form = _title_form_type(
+        title
+    )
+
+    expected_form = (
+        " ".join(
+            expected_form.split()
+        )
+        .upper()
+    )
+
+    return (
+        actual_form
+        == expected_form
+    )
+
+
 def fetch_sec_form(
     name,
     form_type,
@@ -202,8 +244,17 @@ def fetch_sec_form(
 
         rows = []
 
+        ignored_wrong_form = 0
+
         for entry in entries:
             title = item_title(entry)
+
+            if not _form_matches(
+                title,
+                form_type,
+            ):
+                ignored_wrong_form += 1
+                continue
 
             link = item_link(entry)
 
@@ -231,10 +282,17 @@ def fetch_sec_form(
                     )
                 )
 
+        if ignored_wrong_form:
+            print(
+                f"SEC {name}: ignored "
+                f"{ignored_wrong_form} filing(s) "
+                "with a different form type."
+            )
+
         if not rows:
             print(
                 f"SEC {name}: "
-                "no current filings returned; "
+                "no matching current filings returned; "
                 "nothing sent."
             )
             return
