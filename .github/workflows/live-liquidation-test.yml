@@ -1,0 +1,27 @@
+name: Live Crypto Liquidation Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-liquidations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install websockets
+        run: pip install websockets
+
+      - name: Test live liquidation stream
+        run: timeout 180 python3 -u live/liquidations.py || test $? -eq 124
