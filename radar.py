@@ -34,6 +34,10 @@ from monitors.nyfed_operations import (
     fetch_nyfed_market_operations,
 )
 
+from monitors.treasury_auctions import (
+    fetch_treasury_auction_results,
+)
+
 from monitors.treasury import (
     fetch_treasury_tic,
 )
@@ -1403,6 +1407,9 @@ def main():
 
     # NY Fed Treasury and Agency MBS market operations
     fetch_nyfed_market_operations()
+
+    # U.S. Treasury primary-market auction results
+    fetch_treasury_auction_results()
 
         # U.S. stock market events
     fetch_nasdaq_trading_halts()
