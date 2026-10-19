@@ -2,17 +2,20 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 1:
-- Bybit public market data
+Stage 1 verification:
+- Bybit public WebSocket
 - BTCUSDT
 - ETHUSDT
-- Real-time liquidation stream
+- Real-time ticker heartbeat
+- Real-time liquidation events
 
-This module does not require a Bybit API key.
+No Bybit API key is required.
+No Telegram messages are sent in this verification stage.
 """
 
 import asyncio
 import json
+import time
 from datetime import datetime, timezone
 
 import websockets
@@ -25,23 +28,32 @@ SYMBOLS = [
     "ETHUSDT",
 ]
 
+HEARTBEAT_SECONDS = 30
+
+last_heartbeat = {}
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def liquidation_value(price, size):
+def safe_float(value):
     try:
-        return float(price) * float(size)
+        return float(value)
     except (TypeError, ValueError):
         return 0.0
 
 
+def liquidation_value(price, size):
+    return safe_float(price) * safe_float(size)
+
+
 async def subscribe(websocket):
-    topics = [
-        f"allLiquidation.{symbol}"
-        for symbol in SYMBOLS
-    ]
+    topics = []
+
+    for symbol in SYMBOLS:
+        topics.append(f"tickers.{symbol}")
+        topics.append(f"allLiquidation.{symbol}")
 
     message = {
         "op": "subscribe",
@@ -51,28 +63,64 @@ async def subscribe(websocket):
     await websocket.send(json.dumps(message))
 
     print(
-        "TriFlux Live Radar: subscribed to "
-        + ", ".join(topics)
+        "TriFlux Live Radar subscribed to: "
+        + ", ".join(topics),
+        flush=True,
     )
 
 
-async def handle_message(message):
-    try:
-        payload = json.loads(message)
-    except json.JSONDecodeError:
+def handle_ticker(topic, data):
+    if not isinstance(data, dict):
         return
 
-    topic = payload.get("topic", "")
+    symbol = data.get("symbol")
 
-    if not topic.startswith("allLiquidation."):
+    if not symbol:
+        symbol = topic.split(".")[-1]
+
+    now = time.monotonic()
+    previous = last_heartbeat.get(symbol, 0)
+
+    if now - previous < HEARTBEAT_SECONDS:
         return
 
-    data = payload.get("data", [])
+    last_heartbeat[symbol] = now
 
+    last_price = data.get("lastPrice", "N/A")
+    mark_price = data.get("markPrice", "N/A")
+    index_price = data.get("indexPrice", "N/A")
+    open_interest = data.get("openInterest", "N/A")
+    open_interest_value = data.get("openInterestValue", "N/A")
+    funding_rate = data.get("fundingRate", "N/A")
+    turnover_24h = data.get("turnover24h", "N/A")
+    volume_24h = data.get("volume24h", "N/A")
+
+    print(
+        f"[{utc_now()}] MARKET HEARTBEAT | "
+        f"{symbol} | "
+        f"last={last_price} | "
+        f"mark={mark_price} | "
+        f"index={index_price} | "
+        f"OI={open_interest} | "
+        f"OI_value={open_interest_value} | "
+        f"funding={funding_rate} | "
+        f"turnover24h={turnover_24h} | "
+        f"volume24h={volume_24h}",
+        flush=True,
+    )
+
+
+def handle_liquidation(data):
     if isinstance(data, dict):
         data = [data]
 
+    if not isinstance(data, list):
+        return
+
     for item in data:
+        if not isinstance(item, dict):
+            continue
+
         symbol = item.get("s", "UNKNOWN")
         side = item.get("S", "")
         size = item.get("v", "0")
@@ -89,20 +137,64 @@ async def handle_message(message):
 
         print(
             f"[{utc_now()}] "
-            f"{symbol} "
-            f"{liquidated_position} liquidation | "
+            f"LIQUIDATION | "
+            f"{symbol} | "
+            f"{liquidated_position} | "
             f"price={price} | "
             f"size={size} | "
-            f"value=${value:,.2f}"
+            f"value=${value:,.2f}",
+            flush=True,
         )
 
 
+async def handle_message(message):
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        return
+
+    if payload.get("op") == "subscribe":
+        success = payload.get("success")
+
+        print(
+            f"[{utc_now()}] "
+            f"SUBSCRIPTION RESPONSE | "
+            f"success={success} | "
+            f"message={payload.get('ret_msg', '')}",
+            flush=True,
+        )
+        return
+
+    topic = payload.get("topic", "")
+    data = payload.get("data")
+
+    if topic.startswith("tickers."):
+        handle_ticker(topic, data)
+        return
+
+    if topic.startswith("allLiquidation."):
+        handle_liquidation(data)
+
+
 async def run():
-    print("=" * 60)
-    print("TriFlux 24/7 Global Crypto Liquidation Radar")
-    print("Source: Bybit Public WebSocket")
-    print("Markets: BTCUSDT, ETHUSDT")
-    print("=" * 60)
+    print("=" * 64, flush=True)
+    print(
+        "TriFlux 24/7 Global Crypto Liquidation Radar",
+        flush=True,
+    )
+    print(
+        "Source: Bybit Public WebSocket",
+        flush=True,
+    )
+    print(
+        "Markets: BTCUSDT, ETHUSDT",
+        flush=True,
+    )
+    print(
+        "Verification: ticker heartbeat + liquidation stream",
+        flush=True,
+    )
+    print("=" * 64, flush=True)
 
     while True:
         try:
@@ -115,7 +207,8 @@ async def run():
 
                 print(
                     f"[{utc_now()}] "
-                    "Connected to Bybit public WebSocket."
+                    "Connected to Bybit public WebSocket.",
+                    flush=True,
                 )
 
                 await subscribe(websocket)
@@ -129,9 +222,16 @@ async def run():
         except Exception as exc:
             print(
                 f"[{utc_now()}] "
-                f"WebSocket error: {exc}"
+                f"WebSocket error: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
             )
-            print("Reconnecting in 5 seconds...")
+
+            print(
+                "Reconnecting in 5 seconds...",
+                flush=True,
+            )
+
             await asyncio.sleep(5)
 
 
@@ -139,4 +239,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
-        print("TriFlux Live Radar stopped.")
+        print(
+            "TriFlux Live Radar stopped.",
+            flush=True,
+        )
