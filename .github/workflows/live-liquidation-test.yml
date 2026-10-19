@@ -30,7 +30,7 @@ jobs:
         run: pip install websockets
 
       - name: Send Telegram TEST message
-        if: ${{ inputs.telegram_test }}
+        if: ${{ inputs.telegram_test == true }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
@@ -40,7 +40,7 @@ jobs:
 
           message = """🧪 TRIFLUX TELEGRAM TEST
 
-TEST MESSAGE — NOT A REAL MARKET ALERT
+TEST MESSAGE - NOT A REAL MARKET ALERT
 
 Global Crypto Liquidation Radar
 Telegram delivery path verified.
