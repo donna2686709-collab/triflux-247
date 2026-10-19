@@ -7,9 +7,9 @@ from core.state import read_state, write_state
 from core.telegram import send_one
 
 
-NASDAQ_EQUITY_ALERTS_URL = (
+NASDAQ_ARCHIVE_URL = (
     "https://www.nasdaqtrader.com/"
-    "Trader.aspx?id=EquityTraderAlerts"
+    "Trader.aspx?cat_id=2&id=archiveheadlines"
 )
 
 
@@ -75,22 +75,22 @@ def _extract_alerts(raw):
 
         title_lower = title.lower()
 
-        if (
-            "equity trader alert" not in title_lower
-            and "equity regulatory alert" not in title_lower
-            and "equity technical update" not in title_lower
-        ):
+        is_equity_alert = (
+            "equity trader alert" in title_lower
+            or "equity regulatory alert" in title_lower
+            or "equity technical update" in title_lower
+        )
+
+        if not is_equity_alert:
             continue
 
         link = urllib.parse.urljoin(
-            NASDAQ_EQUITY_ALERTS_URL,
+            NASDAQ_ARCHIVE_URL,
             href,
         )
 
-        stable_id = link
-
         rows.append({
-            "id": stable_id,
+            "id": link,
             "title": title,
             "link": link,
         })
@@ -119,7 +119,7 @@ def fetch_nasdaq_equity_alerts():
 
     try:
         raw = download(
-            NASDAQ_EQUITY_ALERTS_URL
+            NASDAQ_ARCHIVE_URL
         )
 
         rows = _extract_alerts(
@@ -133,8 +133,8 @@ def fetch_nasdaq_equity_alerts():
 
         if not rows:
             raise RuntimeError(
-                "Nasdaq Equity Alerts page "
-                "returned no usable alerts"
+                "Nasdaq official archive returned "
+                "no usable Equity Alerts"
             )
 
         state = read_state(
@@ -204,7 +204,7 @@ def fetch_nasdaq_equity_alerts():
                 f"Category: {category}",
                 (
                     "Source: Nasdaq Trader "
-                    "official Equity Alerts"
+                    "official alert archive"
                 ),
             ])
 
