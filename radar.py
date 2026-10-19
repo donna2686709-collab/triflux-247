@@ -23,7 +23,9 @@ from monitors.liquidity import (
 from monitors.market_events import (
     fetch_nasdaq_trading_halts,
 )
-
+from monitors.sec import (
+    fetch_sec_filings as fetch_sec_filings_modular,
+)
 from monitors.nasdaq_alerts import (
     fetch_nasdaq_equity_alerts,
 )
@@ -1178,7 +1180,7 @@ def fetch_sec_form(
         )
 
 
-def fetch_sec_filings():
+def fetch_sec_filings_modular()
     if not SEC_USER_AGENT:
         print(
             "SEC filings skipped: "
