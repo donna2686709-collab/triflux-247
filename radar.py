@@ -30,6 +30,10 @@ from monitors.nasdaq_alerts import (
     fetch_nasdaq_equity_alerts,
 )
 
+from monitors.nyfed_operations import (
+    fetch_nyfed_market_operations,
+)
+
 from monitors.treasury import (
     fetch_treasury_tic,
 )
@@ -1396,6 +1400,9 @@ def main():
             # CFTC positioning and New York Fed liquidity
     fetch_sofr()
     fetch_on_rrp()
+
+    # NY Fed Treasury and Agency MBS market operations
+    fetch_nyfed_market_operations()
 
         # U.S. stock market events
     fetch_nasdaq_trading_halts()
