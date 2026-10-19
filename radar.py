@@ -24,6 +24,10 @@ from monitors.market_events import (
     fetch_nasdaq_trading_halts,
 )
 
+from monitors.nasdaq_alerts import (
+    fetch_nasdaq_equity_alerts,
+)
+
 from monitors.treasury import (
     fetch_treasury_tic,
 )
@@ -1391,8 +1395,9 @@ def main():
     fetch_sofr()
     fetch_on_rrp()
 
-    # U.S. stock market events
+        # U.S. stock market events
     fetch_nasdaq_trading_halts()
+    fetch_nasdaq_equity_alerts()
 
     print(
         "===================================="
