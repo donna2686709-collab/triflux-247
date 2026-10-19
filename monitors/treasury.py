@@ -10,9 +10,10 @@ def fetch_treasury_tic():
     source = "U.S. Treasury TIC"
 
     try:
+        # Official Treasury TIC release archive.
         url = (
             "https://home.treasury.gov/"
-            "news/press-releases"
+            "data/tic-press-releases-by-topic/"
         )
 
         page = download(
@@ -22,27 +23,68 @@ def fetch_treasury_tic():
             errors="ignore",
         )
 
-        # Treasury press-release URLs currently use IDs
-        # such as /news/press-releases/sb0662
-        paths = re.findall(
-            r'href\s*=\s*["\']'
-            r'([^"\']*/news/press-releases/'
-            r'[A-Za-z]{1,10}[0-9]{2,10}/?)'
-            r'["\']',
+        # Find links on the official TIC page that point
+        # to Treasury press releases.
+        matches = re.findall(
+            r'<a\b[^>]*\bhref\s*=\s*["\']'
+            r'([^"\']+)["\'][^>]*>'
+            r'(.*?)</a>',
             page,
-            re.I,
+            re.I | re.S,
         )
 
         candidates = []
         seen = set()
 
-        for path in paths:
+        for raw_link, raw_title in matches:
             link = urllib.parse.urljoin(
-                "https://home.treasury.gov",
+                url,
                 html.unescape(
-                    path.strip()
+                    raw_link.strip()
                 ),
             )
+
+            parsed = urllib.parse.urlparse(
+                link
+            )
+
+            if (
+                parsed.netloc.lower()
+                != "home.treasury.gov"
+            ):
+                continue
+
+            if (
+                "/news/press-releases/"
+                not in parsed.path.lower()
+            ):
+                continue
+
+            title = " ".join(
+                html.unescape(
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        raw_title,
+                    )
+                ).split()
+            )
+
+            if not title:
+                continue
+
+            lower_title = title.casefold()
+
+            # The TIC archive uses titles such as:
+            # "TIC Data for July 2026"
+            # or similar monthly TIC descriptions.
+            if (
+                "tic data" not in lower_title
+                and
+                "treasury international capital"
+                not in lower_title
+            ):
+                continue
 
             link = link.rstrip("/")
 
@@ -51,81 +93,86 @@ def fetch_treasury_tic():
 
             seen.add(link)
 
-            try:
-                article = download(
-                    link
-                ).decode(
-                    "utf-8",
-                    errors="ignore",
-                )
-
-            except Exception:
-                continue
-
-            title = ""
-
-            patterns = [
+            candidates.append(
                 (
-                    r'<meta[^>]+'
-                    r'property=["\']og:title["\']'
-                    r'[^>]+content=["\']'
-                    r'([^"\']+)'
-                ),
-                (
-                    r'<meta[^>]+'
-                    r'content=["\']([^"\']+)'
-                    r'["\'][^>]+'
-                    r'property=["\']og:title["\']'
-                ),
-                r'<h1[^>]*>(.*?)</h1>',
-                r'<title[^>]*>(.*?)</title>',
-            ]
-
-            for pattern in patterns:
-                match = re.search(
-                    pattern,
-                    article,
-                    re.I | re.S,
+                    link,
+                    title,
                 )
-
-                if not match:
-                    continue
-
-                title = " ".join(
-                    html.unescape(
-                        re.sub(
-                            r"<[^>]+>",
-                            " ",
-                            match.group(1),
-                        )
-                    ).split()
-                )
-
-                if title:
-                    break
-
-            if (
-                title
-                and "treasury international capital data"
-                in title.casefold()
-            ):
-                candidates.append(
-                    (
-                        link,
-                        title,
-                    )
-                )
-
-                # Press releases are newest first.
-                break
+            )
 
         if not candidates:
             raise RuntimeError(
-                "No Treasury TIC "
-                "press release found"
+                "No monthly TIC release "
+                "found on official TIC page"
             )
 
-        link, title = candidates[0]
+        # Treasury lists the newest release first.
+        link, archive_title = candidates[0]
+
+        # Open the actual Treasury press release and
+        # extract its official page title.
+        article = download(
+            link
+        ).decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+        title = ""
+
+        patterns = [
+            r'<h1[^>]*>(.*?)</h1>',
+            (
+                r'<meta[^>]+'
+                r'property=["\']og:title["\']'
+                r'[^>]+content=["\']([^"\']+)'
+            ),
+            (
+                r'<meta[^>]+'
+                r'content=["\']([^"\']+)'
+                r'["\'][^>]+'
+                r'property=["\']og:title["\']'
+            ),
+            r'<title[^>]*>(.*?)</title>',
+        ]
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                article,
+                re.I | re.S,
+            )
+
+            if not match:
+                continue
+
+            title = " ".join(
+                html.unescape(
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        match.group(1),
+                    )
+                ).split()
+            )
+
+            if title:
+                break
+
+        if not title:
+            title = archive_title
+
+        if (
+            "treasury international capital"
+            not in title.casefold()
+            and
+            "tic data"
+            not in title.casefold()
+        ):
+            raise RuntimeError(
+                "Latest TIC link did not "
+                "resolve to a TIC release"
+            )
 
         print(
             "Treasury TIC: found latest release: "
