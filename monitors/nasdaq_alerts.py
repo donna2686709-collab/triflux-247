@@ -130,11 +130,37 @@ def fetch_nasdaq_equity_alerts():
         else:
             debug_text = str(raw or "")
 
-        print(
-            "Nasdaq Equity Alerts DEBUG: "
-            f"response length={len(debug_text)}, "
-            f"first 1500 chars={repr(debug_text[:1500])}"
+                debug_lower = debug_text.lower()
+
+        debug_position = debug_lower.find(
+            "equity trader alert"
         )
+
+        if debug_position == -1:
+            debug_position = debug_lower.find(
+                "tradernews.aspx"
+            )
+
+        if debug_position == -1:
+            print(
+                "Nasdaq Equity Alerts DEBUG: "
+                "no Equity Trader Alert text found."
+            )
+        else:
+            debug_start = max(
+                0,
+                debug_position - 1000,
+            )
+
+            debug_end = min(
+                len(debug_text),
+                debug_position + 3000,
+            )
+
+            print(
+                "Nasdaq Equity Alerts DEBUG MATCH: "
+                f"{repr(debug_text[debug_start:debug_end])}"
+            )
 
         rows = _extract_alerts(
             raw
