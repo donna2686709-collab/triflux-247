@@ -16,6 +16,10 @@ from monitors.central_banks import (
     fetch_boe,
 )
 
+from monitors.liquidity import (
+    fetch_on_rrp,
+)
+
 from monitors.treasury import (
     fetch_treasury_tic,
 )
@@ -1379,8 +1383,9 @@ def main():
     # SEC filing monitoring
     fetch_sec_filings()
 
-    # CFTC positioning and SOFR
+        # CFTC positioning and New York Fed liquidity
     fetch_sofr()
+    fetch_on_rrp()
 
     print(
         "===================================="
