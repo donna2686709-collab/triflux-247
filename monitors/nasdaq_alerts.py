@@ -115,6 +115,17 @@ def fetch_nasdaq_equity_alerts():
                     url
                 )
 
+                raw_text = _to_text(
+                    raw
+                )
+
+                print(
+                    f"{feed_name}: "
+                    f"response length={len(raw_text)}, "
+                    f"first 300 chars="
+                    f"{repr(raw_text[:300])}"
+                )
+
                 items = _extract_items(
                     raw
                 )
