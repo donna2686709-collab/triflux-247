@@ -2,15 +2,16 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 7.1:
+Stage 8:
 - Bybit + Binance + Gate + Bitget
 - BTCUSDT / ETHUSDT
-- Exchange-specific normalization
-- Global 1m / 5m / 15m aggregation
+- Global 1m / 5m / 15m liquidation aggregation
 - Per-exchange contribution
 - Risk escalation
+- Risk reset after market conditions fall below WATCH
+- New risk cycle can alert immediately after reset
 - Telegram alerts for REAL market signals only
-- Deterministic self-test NEVER sends Telegram
+- Deterministic self-tests NEVER send Telegram
 - Bitget application-level ping every 30 seconds
 """
 
@@ -201,10 +202,7 @@ def cleanup_liquidations(now):
     )
 
     while liquidation_events:
-        if (
-            liquidation_events[0]["time"]
-            >= oldest
-        ):
+        if liquidation_events[0]["time"] >= oldest:
             break
 
         liquidation_events.popleft()
@@ -299,6 +297,61 @@ def dominant_side(stats):
         return "SHORT"
 
     return "BALANCED"
+
+
+def reset_risk_if_calm(
+    symbol,
+    total,
+    self_test=False,
+):
+    """
+    If the current rolling 1-minute liquidation
+    total falls below WATCH, the previous risk
+    cycle is finished.
+
+    Clearing both level and alert time means a
+    later WATCH is treated as a genuinely new
+    market-risk cycle rather than being blocked
+    by the previous cooldown.
+    """
+
+    current_level = alert_state[symbol]["level"]
+
+    if current_level is None:
+        return False
+
+    new_level = get_risk_level(
+        symbol,
+        total,
+    )
+
+    if new_level is not None:
+        return False
+
+    previous_level = current_level
+
+    alert_state[symbol] = {
+        "time": 0.0,
+        "level": None,
+    }
+
+    prefix = (
+        "SELF TEST RISK RESET"
+        if self_test
+        else "RISK RESET"
+    )
+
+    print(
+        f"[{utc_now()}] "
+        f"{prefix} | "
+        f"{symbol} | "
+        f"{previous_level}->CALM | "
+        "1m liquidation="
+        f"{format_money(total)}",
+        flush=True,
+    )
+
+    return True
 
 
 def should_alert(
@@ -572,9 +625,64 @@ def maybe_process_risk_alert(
     return True
 
 
+def process_risk_state(
+    symbol,
+    stats,
+    exchange_stats,
+    self_test=False,
+):
+    """
+    One entry point for the complete risk-state
+    lifecycle:
+
+    CALM -> WATCH/MEDIUM/HIGH/CRITICAL
+    active risk -> escalation
+    active risk -> CALM reset
+    CALM -> new independent risk cycle
+    """
+
+    reset_risk_if_calm(
+        symbol,
+        stats["total"],
+        self_test=self_test,
+    )
+
+    return maybe_process_risk_alert(
+        symbol,
+        stats,
+        exchange_stats,
+        self_test=self_test,
+    )
+
+
 # ==================================================
-# Self-test
+# Self-tests
 # ==================================================
+
+def make_self_test_exchange_stats(total):
+    quarter = total / 4
+
+    exchange_stats = {}
+
+    for exchange in EXCHANGES:
+        exchange_stats[exchange] = {
+            "long": quarter,
+            "short": 0.0,
+            "total": quarter,
+            "count": 2,
+        }
+
+    return exchange_stats
+
+
+def make_self_test_stats(total):
+    return {
+        "long": total,
+        "short": 0.0,
+        "total": total,
+        "count": 10,
+    }
+
 
 def run_escalation_self_test():
     symbol = "ETHUSDT"
@@ -589,7 +697,7 @@ def run_escalation_self_test():
     )
 
     print(
-        "TRIFLUX SELF TEST: "
+        "TRIFLUX SELF TEST 1: "
         "risk escalation bypasses cooldown",
         flush=True,
     )
@@ -616,37 +724,26 @@ def run_escalation_self_test():
     passed = True
 
     for expected, total in tests:
-        stats = {
-            "long": total,
-            "short": 0.0,
-            "total": total,
-            "count": 10,
-        }
+        stats = make_self_test_stats(
+            total
+        )
 
-        quarter = total / 4
-
-        exchange_stats = {}
-
-        for exchange in EXCHANGES:
-            exchange_stats[exchange] = {
-                "long": quarter,
-                "short": 0.0,
-                "total": quarter,
-                "count": 2,
-            }
+        exchange_stats = (
+            make_self_test_exchange_stats(
+                total
+            )
+        )
 
         detected = get_risk_level(
             symbol,
             total,
         )
 
-        processed = (
-            maybe_process_risk_alert(
-                symbol,
-                stats,
-                exchange_stats,
-                self_test=True,
-            )
+        processed = process_risk_state(
+            symbol,
+            stats,
+            exchange_stats,
+            self_test=True,
         )
 
         if (
@@ -663,9 +760,129 @@ def run_escalation_self_test():
         )
 
     print(
-        "SELF TEST RESULT: PASS | "
+        "SELF TEST 1 RESULT: PASS | "
         "WATCH -> MEDIUM -> HIGH -> "
         "CRITICAL escalation confirmed.",
+        flush=True,
+    )
+
+    print(
+        "=" * 68,
+        flush=True,
+    )
+
+
+def run_reset_self_test():
+    symbol = "ETHUSDT"
+
+    original_state = dict(
+        alert_state[symbol]
+    )
+
+    print(
+        "=" * 68,
+        flush=True,
+    )
+
+    print(
+        "TRIFLUX SELF TEST 2: "
+        "risk reset starts a new alert cycle",
+        flush=True,
+    )
+
+    print(
+        "SELF TEST SAFETY: "
+        "Telegram disabled for "
+        "simulated alerts.",
+        flush=True,
+    )
+
+    alert_state[symbol] = {
+        "time": 0.0,
+        "level": None,
+    }
+
+    # Step 1:
+    # Enter HIGH risk.
+    high_total = 350_000.0
+
+    high_processed = process_risk_state(
+        symbol,
+        make_self_test_stats(
+            high_total
+        ),
+        make_self_test_exchange_stats(
+            high_total
+        ),
+        self_test=True,
+    )
+
+    high_ok = (
+        high_processed
+        and alert_state[symbol]["level"]
+        == "HIGH"
+    )
+
+    # Step 2:
+    # Market becomes calm.
+    calm_total = 5_000.0
+
+    process_risk_state(
+        symbol,
+        make_self_test_stats(
+            calm_total
+        ),
+        make_self_test_exchange_stats(
+            calm_total
+        ),
+        self_test=True,
+    )
+
+    reset_ok = (
+        alert_state[symbol]["level"]
+        is None
+        and alert_state[symbol]["time"]
+        == 0.0
+    )
+
+    # Step 3:
+    # A fresh WATCH arrives immediately.
+    # It must NOT be blocked by the old HIGH
+    # cooldown.
+    watch_total = 35_000.0
+
+    watch_processed = process_risk_state(
+        symbol,
+        make_self_test_stats(
+            watch_total
+        ),
+        make_self_test_exchange_stats(
+            watch_total
+        ),
+        self_test=True,
+    )
+
+    new_cycle_ok = (
+        watch_processed
+        and alert_state[symbol]["level"]
+        == "WATCH"
+    )
+
+    alert_state[symbol] = original_state
+
+    if not (
+        high_ok
+        and reset_ok
+        and new_cycle_ok
+    ):
+        raise RuntimeError(
+            "Risk reset self-test failed."
+        )
+
+    print(
+        "SELF TEST 2 RESULT: PASS | "
+        "HIGH -> CALM RESET -> "
+        "NEW WATCH confirmed.",
         flush=True,
     )
 
@@ -727,13 +944,17 @@ def add_liquidation_event(
         flush=True,
     )
 
-    print_global_summary(symbol)
+    print_global_summary(
+        symbol
+    )
 
 
 def print_global_summary(symbol):
     now = time.time()
 
-    cleanup_liquidations(now)
+    cleanup_liquidations(
+        now
+    )
 
     summaries = {}
     parts = []
@@ -791,12 +1012,54 @@ def print_global_summary(symbol):
         flush=True,
     )
 
-    maybe_process_risk_alert(
+    process_risk_state(
         symbol,
         summaries["1m"],
         exchange_stats,
         self_test=False,
     )
+
+
+# ==================================================
+# Risk maintenance
+# ==================================================
+
+async def risk_maintenance_loop():
+    """
+    Liquidation events arrive only when the market
+    produces new liquidations.
+
+    Without this maintenance loop, an old risk
+    state might never reset during a completely
+    quiet period because no new event would call
+    print_global_summary().
+
+    Recalculate each symbol periodically so expired
+    1-minute events can automatically move the risk
+    state back to CALM.
+    """
+
+    while True:
+        await asyncio.sleep(5)
+
+        now = time.time()
+
+        cleanup_liquidations(
+            now
+        )
+
+        for symbol in SYMBOLS:
+            stats = calculate_window(
+                symbol,
+                ROLLING_WINDOWS["1m"],
+                now,
+            )
+
+            reset_risk_if_calm(
+                symbol,
+                stats["total"],
+                self_test=False,
+            )
 
 
 # ==================================================
@@ -948,12 +1211,18 @@ def handle_bybit_liquidation(data):
         if not isinstance(item, dict):
             continue
 
-        symbol = item.get("s", "")
+        symbol = item.get(
+            "s",
+            "",
+        )
 
         if symbol not in SYMBOLS:
             continue
 
-        side = item.get("S", "")
+        side = item.get(
+            "S",
+            "",
+        )
 
         price = safe_float(
             item.get("p")
@@ -986,7 +1255,9 @@ def handle_bybit_liquidation(data):
 
 async def handle_bybit_message(message):
     try:
-        payload = json.loads(message)
+        payload = json.loads(
+            message
+        )
 
     except json.JSONDecodeError:
         return
@@ -1002,10 +1273,18 @@ async def handle_bybit_message(message):
 
         return
 
-    topic = payload.get("topic", "")
-    data = payload.get("data")
+    topic = payload.get(
+        "topic",
+        "",
+    )
 
-    if topic.startswith("tickers."):
+    data = payload.get(
+        "data"
+    )
+
+    if topic.startswith(
+        "tickers."
+    ):
         update_bybit_ticker(
             topic,
             data,
@@ -1035,7 +1314,9 @@ async def run_bybit():
                     flush=True,
                 )
 
-                await subscribe_bybit(ws)
+                await subscribe_bybit(
+                    ws
+                )
 
                 async for message in ws:
                     await handle_bybit_message(
@@ -1054,7 +1335,9 @@ async def run_bybit():
                 flush=True,
             )
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(
+                5
+            )
 
 
 # ==================================================
@@ -1064,20 +1347,35 @@ async def run_bybit():
 def handle_binance_liquidation(
     payload,
 ):
-    if not isinstance(payload, dict):
+    if not isinstance(
+        payload,
+        dict,
+    ):
         return
 
-    order = payload.get("o", {})
+    order = payload.get(
+        "o",
+        {},
+    )
 
-    if not isinstance(order, dict):
+    if not isinstance(
+        order,
+        dict,
+    ):
         return
 
-    symbol = order.get("s", "")
+    symbol = order.get(
+        "s",
+        "",
+    )
 
     if symbol not in SYMBOLS:
         return
 
-    side = order.get("S", "")
+    side = order.get(
+        "S",
+        "",
+    )
 
     price = safe_float(
         order.get("ap")
@@ -1160,7 +1458,9 @@ async def run_binance():
                 flush=True,
             )
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(
+                5
+            )
 
 
 # ==================================================
@@ -1169,7 +1469,9 @@ async def run_binance():
 
 async def subscribe_gate(ws):
     request = {
-        "time": int(time.time()),
+        "time": int(
+            time.time()
+        ),
         "channel": (
             "futures.public_liquidates"
         ),
@@ -1181,7 +1483,9 @@ async def subscribe_gate(ws):
     }
 
     await ws.send(
-        json.dumps(request)
+        json.dumps(
+            request
+        )
     )
 
     print(
@@ -1200,7 +1504,10 @@ def handle_gate_liquidation(
     ):
         return
 
-    if payload.get("event") != "update":
+    if (
+        payload.get("event")
+        != "update"
+    ):
         return
 
     result = payload.get(
@@ -1208,14 +1515,23 @@ def handle_gate_liquidation(
         [],
     )
 
-    if isinstance(result, dict):
+    if isinstance(
+        result,
+        dict,
+    ):
         result = [result]
 
-    if not isinstance(result, list):
+    if not isinstance(
+        result,
+        list,
+    ):
         return
 
     for item in result:
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict,
+        ):
             continue
 
         contract = item.get(
@@ -1301,7 +1617,9 @@ async def run_gate():
                     flush=True,
                 )
 
-                await subscribe_gate(ws)
+                await subscribe_gate(
+                    ws
+                )
 
                 async for message in ws:
                     try:
@@ -1339,7 +1657,9 @@ async def run_gate():
                 flush=True,
             )
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(
+                5
+            )
 
 
 # ==================================================
@@ -1358,7 +1678,9 @@ async def subscribe_bitget(ws):
     }
 
     await ws.send(
-        json.dumps(request)
+        json.dumps(
+            request
+        )
     )
 
     print(
@@ -1369,22 +1691,14 @@ async def subscribe_bitget(ws):
 
 
 async def bitget_keepalive(ws):
-    """
-    Bitget requires an application-level
-    text ping periodically.
-
-    This task is tied to one websocket
-    connection. When that connection closes,
-    the task is cancelled and recreated after
-    reconnect.
-    """
-
     while True:
         await asyncio.sleep(
             BITGET_PING_SECONDS
         )
 
-        await ws.send("ping")
+        await ws.send(
+            "ping"
+        )
 
         print(
             f"[{utc_now()}] "
@@ -1401,10 +1715,16 @@ def handle_bitget_liquidation(
         {},
     )
 
-    if not isinstance(arg, dict):
+    if not isinstance(
+        arg,
+        dict,
+    ):
         return
 
-    if arg.get("topic") != "liquidation":
+    if (
+        arg.get("topic")
+        != "liquidation"
+    ):
         return
 
     data = payload.get(
@@ -1412,18 +1732,30 @@ def handle_bitget_liquidation(
         [],
     )
 
-    if isinstance(data, dict):
+    if isinstance(
+        data,
+        dict,
+    ):
         data = [data]
 
-    if not isinstance(data, list):
+    if not isinstance(
+        data,
+        list,
+    ):
         return
 
     for item in data:
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict,
+        ):
             continue
 
         symbol = (
-            item.get("symbol", "")
+            item.get(
+                "symbol",
+                "",
+            )
             .upper()
         )
 
@@ -1431,7 +1763,10 @@ def handle_bitget_liquidation(
             continue
 
         side = (
-            item.get("side", "")
+            item.get(
+                "side",
+                "",
+            )
             .lower()
         )
 
@@ -1457,8 +1792,6 @@ def handle_bitget_liquidation(
         else:
             continue
 
-        # Bitget liquidation amount is
-        # already denominated in quote coin.
         value = amount
 
         add_liquidation_event(
@@ -1476,9 +1809,6 @@ async def run_bitget():
         keepalive_task = None
 
         try:
-            # Disable protocol-level automatic
-            # ping for Bitget. We explicitly use
-            # Bitget's required text ping.
             async with websockets.connect(
                 BITGET_WS_URL,
                 ping_interval=None,
@@ -1491,11 +1821,15 @@ async def run_bitget():
                     flush=True,
                 )
 
-                await subscribe_bitget(ws)
+                await subscribe_bitget(
+                    ws
+                )
 
                 keepalive_task = (
                     asyncio.create_task(
-                        bitget_keepalive(ws)
+                        bitget_keepalive(
+                            ws
+                        )
                     )
                 )
 
@@ -1576,7 +1910,9 @@ async def run_bitget():
             flush=True,
         )
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(
+            5
+        )
 
 
 # ==================================================
@@ -1585,6 +1921,8 @@ async def run_bitget():
 
 async def run():
     run_escalation_self_test()
+
+    run_reset_self_test()
 
     print(
         "Loading Gate contract metadata...",
@@ -1607,7 +1945,7 @@ async def run():
     )
 
     print(
-        "Stage 7.1: "
+        "Stage 8: "
         "Bybit + Binance + Gate + Bitget",
         flush=True,
     )
@@ -1619,6 +1957,12 @@ async def run():
 
     print(
         "Aggregation: 1m / 5m / 15m",
+        flush=True,
+    )
+
+    print(
+        "Risk lifecycle: "
+        "escalation + automatic CALM reset",
         flush=True,
     )
 
@@ -1649,6 +1993,7 @@ async def run():
         run_binance(),
         run_gate(),
         run_bitget(),
+        risk_maintenance_loop(),
     )
 
 
