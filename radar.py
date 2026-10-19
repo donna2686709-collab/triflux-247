@@ -42,6 +42,10 @@ from monitors.treasury import (
     fetch_treasury_tic,
 )
 
+from monitors.options_flow import (
+    fetch_options_flow,
+)
+
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -1414,6 +1418,9 @@ def main():
         # U.S. stock market events
     fetch_nasdaq_trading_halts()
     fetch_nasdaq_equity_alerts()
+
+    # U.S. options money flow and risk
+    fetch_options_flow()
 
     print(
         "===================================="
