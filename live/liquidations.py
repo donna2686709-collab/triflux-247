@@ -2,7 +2,7 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 4:
+Stage 4 Verification:
 - Bybit public WebSocket
 - BTCUSDT / ETHUSDT
 - Persistent ticker state
@@ -11,6 +11,7 @@ Stage 4:
 - Risk-level engine
 - Alert cooldown
 - Immediate alert on risk-level escalation
+- Safe startup self-test for escalation logic
 
 No Bybit API key is required.
 Telegram sending is NOT enabled yet.
@@ -223,14 +224,18 @@ def should_alert(symbol, new_level, now):
     return False, "COOLDOWN"
 
 
-def maybe_print_risk_alert(symbol, stats):
+def maybe_print_risk_alert(
+    symbol,
+    stats,
+    prefix="RISK ALERT",
+):
     level = get_risk_level(
         symbol,
         stats["total"],
     )
 
     if level is None:
-        return
+        return False
 
     now = time.time()
 
@@ -241,7 +246,7 @@ def maybe_print_risk_alert(symbol, stats):
     )
 
     if not allowed:
-        return
+        return False
 
     previous_level = alert_state[
         symbol
@@ -263,7 +268,7 @@ def maybe_print_risk_alert(symbol, stats):
 
     print(
         f"[{utc_now()}] "
-        f"RISK ALERT | "
+        f"{prefix} | "
         f"{level} | "
         f"{symbol} | "
         f"reason={reason} | "
@@ -276,6 +281,114 @@ def maybe_print_risk_alert(symbol, stats):
         f"{format_money(stats['short'])} | "
         f"dominant={side} | "
         f"events={stats['count']}",
+        flush=True,
+    )
+
+    return True
+
+
+def run_escalation_self_test():
+    test_symbol = "ETHUSDT"
+
+    original_state = dict(
+        alert_state[test_symbol]
+    )
+
+    print(
+        "=" * 64,
+        flush=True,
+    )
+
+    print(
+        "TRIFLUX SELF TEST: "
+        "risk escalation bypasses cooldown",
+        flush=True,
+    )
+
+    alert_state[test_symbol] = {
+        "time": 0.0,
+        "level": None,
+    }
+
+    test_cases = [
+        {
+            "expected": "WATCH",
+            "total": 35_000.0,
+        },
+        {
+            "expected": "MEDIUM",
+            "total": 120_000.0,
+        },
+        {
+            "expected": "HIGH",
+            "total": 350_000.0,
+        },
+        {
+            "expected": "CRITICAL",
+            "total": 1_100_000.0,
+        },
+    ]
+
+    passed = True
+
+    for test_case in test_cases:
+        expected = test_case["expected"]
+        total = test_case["total"]
+
+        detected = get_risk_level(
+            test_symbol,
+            total,
+        )
+
+        stats = {
+            "long": 0.0,
+            "short": total,
+            "total": total,
+            "count": 10,
+        }
+
+        printed = maybe_print_risk_alert(
+            test_symbol,
+            stats,
+            prefix="SELF TEST ALERT",
+        )
+
+        if (
+            detected != expected
+            or not printed
+        ):
+            passed = False
+
+            print(
+                f"SELF TEST FAILURE | "
+                f"expected={expected} | "
+                f"detected={detected}",
+                flush=True,
+            )
+
+    alert_state[test_symbol] = (
+        original_state
+    )
+
+    if passed:
+        print(
+            "SELF TEST RESULT: PASS | "
+            "WATCH -> MEDIUM -> HIGH -> "
+            "CRITICAL escalation confirmed.",
+            flush=True,
+        )
+    else:
+        print(
+            "SELF TEST RESULT: FAIL",
+            flush=True,
+        )
+
+        raise RuntimeError(
+            "Risk escalation self-test failed."
+        )
+
+    print(
+        "=" * 64,
         flush=True,
     )
 
@@ -538,6 +651,8 @@ async def handle_message(message):
 
 
 async def run():
+    run_escalation_self_test()
+
     print(
         "=" * 64,
         flush=True,
@@ -560,8 +675,8 @@ async def run():
     )
 
     print(
-        "Stage 4: risk escalation "
-        "can bypass cooldown",
+        "Stage 4 Verification: "
+        "self-test + live market data",
         flush=True,
     )
 
