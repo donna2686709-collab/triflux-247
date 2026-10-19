@@ -16,6 +16,11 @@ from monitors.central_banks import (
     fetch_boe,
 )
 
+from monitors.treasury import (
+    fetch_treasury_tic,
+)
+
+
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -1180,6 +1185,7 @@ def fetch_sec_filings():
 
 def fetch_sofr():
     fetch_cftc_cot_tff()
+
     source = (
         "New York Fed SOFR"
     )
@@ -1360,6 +1366,7 @@ def main():
 
     # U.S. government and regulatory news
     fetch_treasury()
+    fetch_treasury_tic()
     fetch_sec_news()
 
     # U.S. macroeconomic indicators
