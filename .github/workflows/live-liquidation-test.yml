@@ -34,22 +34,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
-        run: |
-          python3 - <<'PY'
-          from core.telegram import send_telegram
-
-          message = """🧪 TRIFLUX TELEGRAM TEST
-
-TEST MESSAGE - NOT A REAL MARKET ALERT
-
-Global Crypto Liquidation Radar
-Telegram delivery path verified.
-
-TriFlux 24/7"""
-
-          send_telegram(message)
-          print("TELEGRAM TEST: PASS")
-          PY
+        run: python3 -c "from core.telegram import send_telegram; send_telegram('🧪 TRIFLUX TELEGRAM TEST\n\nTEST MESSAGE - NOT A REAL MARKET ALERT\n\nGlobal Crypto Liquidation Radar\nTelegram delivery path verified.\n\nTriFlux 24/7'); print('TELEGRAM TEST PASS')"
 
       - name: Test live liquidation stream
         env:
