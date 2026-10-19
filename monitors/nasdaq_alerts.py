@@ -1,7 +1,6 @@
 import html
 import re
 import urllib.parse
-import xml.etree.ElementTree as ET
 
 from core.network import download
 from core.state import read_state, write_state
@@ -24,49 +23,83 @@ NASDAQ_ALERT_FEEDS = [
 ]
 
 
-def _clean(value):
-    return " ".join(
-        html.unescape(
-            str(value or "")
-        ).split()
-    )
-
-
-def _clean_xml(raw):
+def _to_text(raw):
     if isinstance(raw, bytes):
-        raw = raw.decode(
+        return raw.decode(
             "utf-8",
             errors="replace",
         )
 
-    raw = str(raw)
+    return str(raw or "")
 
-    # Remove control characters that are illegal in XML 1.0.
-    raw = re.sub(
-        r"[\x00-\x08\x0B\x0C\x0E-\x1F]",
-        "",
-        raw,
+
+def _clean_text(value):
+    value = re.sub(
+        r"<!\[CDATA\[(.*?)\]\]>",
+        r"\1",
+        str(value or ""),
+        flags=re.DOTALL,
     )
 
-    # Nasdaq feeds can contain bare ampersands.
-    raw = re.sub(
-        r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)",
-        "&amp;",
-        raw,
+    value = re.sub(
+        r"<[^>]+>",
+        " ",
+        value,
     )
 
-    return raw
+    value = html.unescape(
+        value
+    )
+
+    return " ".join(
+        value.split()
+    )
 
 
-def _text(node, name):
-    value = node.findtext(name)
+def _extract_tag(block, tag):
+    patterns = [
+        rf"<{tag}\b[^>]*>(.*?)</{tag}>",
+        rf"<[A-Za-z0-9_-]+:{tag}\b[^>]*>"
+        rf"(.*?)"
+        rf"</[A-Za-z0-9_-]+:{tag}>",
+    ]
 
-    if value is None:
-        value = node.findtext(
-            f"{{*}}{name}"
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            block,
+            flags=(
+                re.IGNORECASE
+                | re.DOTALL
+            ),
         )
 
-    return _clean(value)
+        if match:
+            return _clean_text(
+                match.group(1)
+            )
+
+    return ""
+
+
+def _extract_items(raw):
+    text = _to_text(raw)
+
+    text = text.replace(
+        "\x00",
+        "",
+    )
+
+    matches = re.findall(
+        r"<item\b[^>]*>(.*?)</item>",
+        text,
+        flags=(
+            re.IGNORECASE
+            | re.DOTALL
+        ),
+    )
+
+    return matches
 
 
 def fetch_nasdaq_equity_alerts():
@@ -78,20 +111,13 @@ def fetch_nasdaq_equity_alerts():
 
         for feed_name, url in NASDAQ_ALERT_FEEDS:
             try:
-                raw = download(url)
-
-                root = ET.fromstring(
-                    _clean_xml(raw)
+                raw = download(
+                    url
                 )
 
-                items = root.findall(
-                    ".//item"
+                items = _extract_items(
+                    raw
                 )
-
-                if not items:
-                    items = root.findall(
-                        ".//{*}item"
-                    )
 
                 print(
                     f"{feed_name}: "
@@ -99,39 +125,39 @@ def fetch_nasdaq_equity_alerts():
                 )
 
                 for item in items:
-                    title = _text(
+                    title = _extract_tag(
                         item,
                         "title",
                     )
 
-                    link = _text(
+                    link = _extract_tag(
                         item,
                         "link",
                     )
 
-                    guid = _text(
+                    guid = _extract_tag(
                         item,
                         "guid",
                     )
 
-                    pub_date = _text(
+                    pub_date = _extract_tag(
                         item,
                         "pubDate",
                     )
 
-                    description = _text(
+                    description = _extract_tag(
                         item,
                         "description",
                     )
+
+                    if not title:
+                        continue
 
                     if link:
                         link = urllib.parse.urljoin(
                             url,
                             link,
                         )
-
-                    if not title:
-                        continue
 
                     stable_id = (
                         guid
