@@ -2,15 +2,15 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 5:
-- Bybit public WebSocket
+Stage 6:
+- Bybit + Binance public WebSocket
 - BTCUSDT / ETHUSDT
-- Persistent ticker state
-- Rolling 1m / 5m / 15m liquidation totals
+- Unified liquidation normalization
+- Per-exchange + global rolling totals
+- 1m / 5m / 15m windows
 - Risk-level engine
-- Alert cooldown
-- Immediate alert on risk-level escalation
-- Safe startup self-test
+- Risk escalation bypasses cooldown
+- Safe deterministic self-test
 - Telegram alerts for REAL market risk only
 
 SELF TEST alerts NEVER go to Telegram.
@@ -18,7 +18,6 @@ SELF TEST alerts NEVER go to Telegram.
 
 import asyncio
 import json
-import os
 import sys
 import time
 from collections import deque
@@ -51,9 +50,19 @@ BYBIT_WS_URL = (
     "wss://stream.bybit.com/v5/public/linear"
 )
 
+BINANCE_WS_URL = (
+    "wss://fstream.binance.com/market/ws/"
+    "!forceOrder@arr"
+)
+
 SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
+]
+
+EXCHANGES = [
+    "BYBIT",
+    "BINANCE",
 ]
 
 HEARTBEAT_SECONDS = 30
@@ -168,7 +177,7 @@ def liquidation_value(
 
 
 # --------------------------------------------------
-# Rolling liquidation calculations
+# Rolling calculations
 # --------------------------------------------------
 
 def cleanup_liquidations(now):
@@ -195,6 +204,7 @@ def calculate_window(
     symbol,
     seconds,
     now,
+    exchange=None,
 ):
     long_value = 0.0
     short_value = 0.0
@@ -209,15 +219,18 @@ def calculate_window(
         if event["symbol"] != symbol:
             continue
 
+        if (
+            exchange is not None
+            and event["exchange"] != exchange
+        ):
+            continue
+
         event_count += 1
 
         if event["position"] == "LONG":
             long_value += event["value"]
 
-        elif (
-            event["position"]
-            == "SHORT"
-        ):
+        elif event["position"] == "SHORT":
             short_value += event["value"]
 
     return {
@@ -239,11 +252,9 @@ def get_risk_level(
     symbol,
     total_value,
 ):
-    thresholds = (
-        ALERT_THRESHOLDS.get(
-            symbol,
-            {},
-        )
+    thresholds = ALERT_THRESHOLDS.get(
+        symbol,
+        {},
     )
 
     if total_value >= thresholds.get(
@@ -274,16 +285,10 @@ def get_risk_level(
 
 
 def dominant_side(stats):
-    if (
-        stats["long"]
-        > stats["short"]
-    ):
+    if stats["long"] > stats["short"]:
         return "LONG"
 
-    if (
-        stats["short"]
-        > stats["long"]
-    ):
+    if stats["short"] > stats["long"]:
         return "SHORT"
 
     return "BALANCED"
@@ -312,7 +317,6 @@ def should_alert(
         0,
     )
 
-    # Risk escalation bypasses cooldown.
     if new_rank > previous_rank:
         return True, "ESCALATION"
 
@@ -320,10 +324,7 @@ def should_alert(
         now - previous_time
         >= ALERT_COOLDOWN_SECONDS
     ):
-        return (
-            True,
-            "COOLDOWN_EXPIRED",
-        )
+        return True, "COOLDOWN_EXPIRED"
 
     return False, "COOLDOWN"
 
@@ -337,6 +338,7 @@ def build_telegram_alert(
     level,
     stats,
     reason,
+    exchange_stats,
 ):
     state = ticker_state.get(
         symbol,
@@ -353,15 +355,11 @@ def build_telegram_alert(
     )
 
     price = format_price(
-        state.get(
-            "lastPrice"
-        )
+        state.get("lastPrice")
     )
 
     mark_price = format_price(
-        state.get(
-            "markPrice"
-        )
+        state.get("markPrice")
     )
 
     oi_value = format_money(
@@ -373,30 +371,23 @@ def build_telegram_alert(
     )
 
     funding = format_funding(
-        state.get(
-            "fundingRate"
-        )
+        state.get("fundingRate")
     )
 
-    if side == "LONG":
-        pressure = (
-            "Long liquidation pressure"
-        )
+    bybit_total = exchange_stats[
+        "BYBIT"
+    ]["total"]
 
-    elif side == "SHORT":
-        pressure = (
-            "Short liquidation pressure"
-        )
-
-    else:
-        pressure = (
-            "Balanced liquidation pressure"
-        )
+    binance_total = exchange_stats[
+        "BINANCE"
+    ]["total"]
 
     if reason == "ESCALATION":
         trigger = "Risk level escalated"
+
     elif reason == "NEW":
         trigger = "New risk signal"
+
     else:
         trigger = (
             "Risk signal remains active"
@@ -404,14 +395,14 @@ def build_telegram_alert(
 
     lines = [
         (
-            f"{emoji} CRYPTO "
+            f"{emoji} GLOBAL CRYPTO "
             "LIQUIDATION ALERT"
         ),
         "",
         f"{level} | {symbol}",
         "",
         (
-            "1m Liquidations: "
+            "Global 1m: "
             f"{format_money(stats['total'])}"
         ),
         (
@@ -422,13 +413,16 @@ def build_telegram_alert(
             "SHORT: "
             f"{format_money(stats['short'])}"
         ),
+        f"Dominant: {side}",
+        f"Events: {stats['count']}",
+        "",
         (
-            "Dominant: "
-            f"{side}"
+            "Bybit: "
+            f"{format_money(bybit_total)}"
         ),
         (
-            "Events: "
-            f"{stats['count']}"
+            "Binance: "
+            f"{format_money(binance_total)}"
         ),
         "",
         f"Price: {price}",
@@ -436,10 +430,9 @@ def build_telegram_alert(
         f"Open Interest: {oi_value}",
         f"Funding: {funding}",
         "",
-        pressure,
         f"Trigger: {trigger}",
         "",
-        "Source: Bybit",
+        "Sources: Bybit + Binance",
         "TriFlux 24/7",
     ]
 
@@ -451,12 +444,14 @@ def send_real_market_alert(
     level,
     stats,
     reason,
+    exchange_stats,
 ):
     message = build_telegram_alert(
         symbol,
         level,
         stats,
         reason,
+        exchange_stats,
     )
 
     try:
@@ -475,8 +470,6 @@ def send_real_market_alert(
         return True
 
     except Exception as exc:
-        # Telegram failure must not stop
-        # the live market listener.
         print(
             f"[{utc_now()}] "
             "TELEGRAM ERROR | "
@@ -495,6 +488,7 @@ def send_real_market_alert(
 def maybe_process_risk_alert(
     symbol,
     stats,
+    exchange_stats,
     self_test=False,
 ):
     level = get_risk_level(
@@ -517,9 +511,7 @@ def maybe_process_risk_alert(
         return False
 
     previous_level = (
-        alert_state[
-            symbol
-        ]["level"]
+        alert_state[symbol]["level"]
     )
 
     alert_state[symbol] = {
@@ -533,16 +525,16 @@ def maybe_process_risk_alert(
 
     if reason == "ESCALATION":
         transition = (
-            f"{previous_level}"
-            f"->{level}"
+            f"{previous_level}->{level}"
         )
     else:
         transition = level
 
-    if self_test:
-        prefix = "SELF TEST ALERT"
-    else:
-        prefix = "RISK ALERT"
+    prefix = (
+        "SELF TEST ALERT"
+        if self_test
+        else "GLOBAL RISK ALERT"
+    )
 
     print(
         f"[{utc_now()}] "
@@ -562,22 +554,20 @@ def maybe_process_risk_alert(
         flush=True,
     )
 
-    # CRITICAL SAFETY RULE:
-    # simulated self-test data is NEVER
-    # sent to Telegram.
     if not self_test:
         send_real_market_alert(
             symbol,
             level,
             stats,
             reason,
+            exchange_stats,
         )
 
     return True
 
 
 # --------------------------------------------------
-# Safe deterministic self-test
+# Deterministic self-test
 # --------------------------------------------------
 
 def run_escalation_self_test():
@@ -594,8 +584,7 @@ def run_escalation_self_test():
 
     print(
         "TRIFLUX SELF TEST: "
-        "risk escalation bypasses "
-        "cooldown",
+        "risk escalation bypasses cooldown",
         flush=True,
     )
 
@@ -612,35 +601,15 @@ def run_escalation_self_test():
     }
 
     test_cases = [
-        {
-            "expected": "WATCH",
-            "total": 35_000.0,
-        },
-        {
-            "expected": "MEDIUM",
-            "total": 120_000.0,
-        },
-        {
-            "expected": "HIGH",
-            "total": 350_000.0,
-        },
-        {
-            "expected": "CRITICAL",
-            "total": 1_100_000.0,
-        },
+        ("WATCH", 35_000.0),
+        ("MEDIUM", 120_000.0),
+        ("HIGH", 350_000.0),
+        ("CRITICAL", 1_100_000.0),
     ]
 
     passed = True
 
-    for test_case in test_cases:
-        expected = (
-            test_case["expected"]
-        )
-
-        total = (
-            test_case["total"]
-        )
-
+    for expected, total in test_cases:
         detected = get_risk_level(
             test_symbol,
             total,
@@ -653,10 +622,26 @@ def run_escalation_self_test():
             "count": 10,
         }
 
+        exchange_stats = {
+            "BYBIT": {
+                "long": 0.0,
+                "short": total / 2,
+                "total": total / 2,
+                "count": 5,
+            },
+            "BINANCE": {
+                "long": 0.0,
+                "short": total / 2,
+                "total": total / 2,
+                "count": 5,
+            },
+        }
+
         processed = (
             maybe_process_risk_alert(
                 test_symbol,
                 stats,
+                exchange_stats,
                 self_test=True,
             )
         )
@@ -674,7 +659,6 @@ def run_escalation_self_test():
                 flush=True,
             )
 
-    # Restore real market alert state.
     alert_state[test_symbol] = (
         original_state
     )
@@ -683,8 +667,7 @@ def run_escalation_self_test():
         print(
             "SELF TEST RESULT: PASS | "
             "WATCH -> MEDIUM -> HIGH -> "
-            "CRITICAL escalation "
-            "confirmed.",
+            "CRITICAL escalation confirmed.",
             flush=True,
         )
 
@@ -695,8 +678,7 @@ def run_escalation_self_test():
         )
 
         raise RuntimeError(
-            "Risk escalation "
-            "self-test failed."
+            "Risk escalation self-test failed."
         )
 
     print(
@@ -706,20 +688,75 @@ def run_escalation_self_test():
 
 
 # --------------------------------------------------
-# Liquidation summaries
+# Unified event storage
 # --------------------------------------------------
 
-def print_liquidation_summary(
+def add_liquidation_event(
+    exchange,
     symbol,
+    position,
+    price,
+    size,
 ):
+    if symbol not in SYMBOLS:
+        return
+
+    value = liquidation_value(
+        price,
+        size,
+    )
+
+    if value <= 0:
+        return
+
+    event = {
+        "time": time.time(),
+        "exchange": exchange,
+        "symbol": symbol,
+        "position": position,
+        "price": safe_float(price),
+        "size": safe_float(size),
+        "value": value,
+    }
+
+    liquidation_events.append(
+        event
+    )
+
+    cleanup_liquidations(
+        event["time"]
+    )
+
+    print(
+        f"[{utc_now()}] "
+        "LIQUIDATION | "
+        f"{exchange} | "
+        f"{symbol} | "
+        f"{position} | "
+        f"price={price} | "
+        f"size={size} | "
+        f"value={format_money(value)}",
+        flush=True,
+    )
+
+    print_global_summary(
+        symbol
+    )
+
+
+# --------------------------------------------------
+# Global rolling summary
+# --------------------------------------------------
+
+def print_global_summary(symbol):
     now = time.time()
 
     cleanup_liquidations(
         now
     )
 
-    summaries = {}
-    parts = []
+    global_summaries = {}
+    output_parts = []
 
     for label, seconds in (
         ROLLING_WINDOWS.items()
@@ -730,39 +767,63 @@ def print_liquidation_summary(
             now,
         )
 
-        summaries[label] = stats
+        global_summaries[label] = stats
 
-        parts.append(
+        output_parts.append(
             f"{label}: "
-            "LONG="
-            f"{format_money(stats['long'])} | "
-            "SHORT="
-            f"{format_money(stats['short'])} | "
-            "TOTAL="
-            f"{format_money(stats['total'])} | "
+            f"LONG={format_money(stats['long'])} | "
+            f"SHORT={format_money(stats['short'])} | "
+            f"TOTAL={format_money(stats['total'])} | "
             f"events={stats['count']}"
         )
 
     print(
         f"[{utc_now()}] "
-        "LIQUIDATION ROLLING | "
+        "GLOBAL ROLLING | "
         f"{symbol} | "
-        + " || ".join(parts),
+        + " || ".join(output_parts),
+        flush=True,
+    )
+
+    exchange_stats = {}
+
+    for exchange in EXCHANGES:
+        exchange_stats[exchange] = (
+            calculate_window(
+                symbol,
+                ROLLING_WINDOWS["1m"],
+                now,
+                exchange=exchange,
+            )
+        )
+
+    print(
+        f"[{utc_now()}] "
+        "EXCHANGE SPLIT | "
+        f"{symbol} | "
+        "1m | "
+        "BYBIT="
+        f"{format_money(exchange_stats['BYBIT']['total'])} | "
+        "BINANCE="
+        f"{format_money(exchange_stats['BINANCE']['total'])}",
         flush=True,
     )
 
     maybe_process_risk_alert(
         symbol,
-        summaries["1m"],
+        global_summaries["1m"],
+        exchange_stats,
         self_test=False,
     )
 
 
 # --------------------------------------------------
-# Bybit subscription
+# Bybit
 # --------------------------------------------------
 
-async def subscribe(websocket):
+async def subscribe_bybit(
+    websocket,
+):
     topics = []
 
     for symbol in SYMBOLS:
@@ -774,28 +835,21 @@ async def subscribe(websocket):
             f"allLiquidation.{symbol}"
         )
 
-    message = {
-        "op": "subscribe",
-        "args": topics,
-    }
-
     await websocket.send(
-        json.dumps(message)
+        json.dumps({
+            "op": "subscribe",
+            "args": topics,
+        })
     )
 
     print(
-        "TriFlux Live Radar "
-        "subscribed to: "
+        "BYBIT subscribed to: "
         + ", ".join(topics),
         flush=True,
     )
 
 
-# --------------------------------------------------
-# Ticker
-# --------------------------------------------------
-
-def update_ticker_state(
+def update_bybit_ticker(
     topic,
     data,
 ):
@@ -805,17 +859,13 @@ def update_ticker_state(
     ):
         return
 
-    symbol = data.get(
-        "symbol"
+    symbol = (
+        data.get("symbol")
+        or topic.split(".")[-1]
     )
 
-    if not symbol:
-        symbol = (
-            topic.split(".")[-1]
-        )
-
     if symbol not in ticker_state:
-        ticker_state[symbol] = {}
+        return
 
     ticker_state[symbol].update(
         data
@@ -823,11 +873,9 @@ def update_ticker_state(
 
     now = time.monotonic()
 
-    previous = (
-        last_heartbeat.get(
-            symbol,
-            0.0,
-        )
+    previous = last_heartbeat.get(
+        symbol,
+        0.0,
     )
 
     if (
@@ -843,32 +891,21 @@ def update_ticker_state(
     print(
         f"[{utc_now()}] "
         "MARKET HEARTBEAT | "
+        "BYBIT | "
         f"{symbol} | "
-        "last="
-        f"{state.get('lastPrice', 'N/A')} | "
-        "mark="
-        f"{state.get('markPrice', 'N/A')} | "
-        "index="
-        f"{state.get('indexPrice', 'N/A')} | "
-        "OI="
-        f"{state.get('openInterest', 'N/A')} | "
+        f"last={state.get('lastPrice', 'N/A')} | "
+        f"mark={state.get('markPrice', 'N/A')} | "
+        f"OI={state.get('openInterest', 'N/A')} | "
         "OI_value="
         f"{state.get('openInterestValue', 'N/A')} | "
-        "funding="
-        f"{state.get('fundingRate', 'N/A')} | "
-        "turnover24h="
-        f"{state.get('turnover24h', 'N/A')} | "
-        "volume24h="
-        f"{state.get('volume24h', 'N/A')}",
+        f"funding={state.get('fundingRate', 'N/A')}",
         flush=True,
     )
 
 
-# --------------------------------------------------
-# Liquidations
-# --------------------------------------------------
-
-def handle_liquidation(data):
+def handle_bybit_liquidation(
+    data,
+):
     if isinstance(
         data,
         dict,
@@ -890,7 +927,7 @@ def handle_liquidation(data):
 
         symbol = item.get(
             "s",
-            "UNKNOWN",
+            "",
         )
 
         side = item.get(
@@ -898,84 +935,39 @@ def handle_liquidation(data):
             "",
         )
 
-        size = item.get(
-            "v",
-            "0",
-        )
-
         price = item.get(
             "p",
             "0",
         )
 
-        value = liquidation_value(
+        size = item.get(
+            "v",
+            "0",
+        )
+
+        # Existing verified TriFlux
+        # Bybit normalization.
+        if side == "Buy":
+            position = "LONG"
+
+        elif side == "Sell":
+            position = "SHORT"
+
+        else:
+            continue
+
+        add_liquidation_event(
+            "BYBIT",
+            symbol,
+            position,
             price,
             size,
         )
 
-        # Bybit allLiquidation:
-        # Buy  = LONG position liquidated
-        # Sell = SHORT position liquidated
-        if side == "Buy":
-            liquidated_position = (
-                "LONG"
-            )
 
-        elif side == "Sell":
-            liquidated_position = (
-                "SHORT"
-            )
-
-        else:
-            liquidated_position = (
-                "UNKNOWN"
-            )
-
-        event = {
-            "time": time.time(),
-            "symbol": symbol,
-            "position": (
-                liquidated_position
-            ),
-            "price": safe_float(
-                price
-            ),
-            "size": safe_float(
-                size
-            ),
-            "value": value,
-        }
-
-        liquidation_events.append(
-            event
-        )
-
-        cleanup_liquidations(
-            event["time"]
-        )
-
-        print(
-            f"[{utc_now()}] "
-            "LIQUIDATION | "
-            f"{symbol} | "
-            f"{liquidated_position} | "
-            f"price={price} | "
-            f"size={size} | "
-            "value="
-            f"{format_money(value)}",
-            flush=True,
-        )
-
-        print_liquidation_summary(
-            symbol
-        )
-
-
-# --------------------------------------------------
-# Incoming WebSocket messages
-# --------------------------------------------------
-
-async def handle_message(message):
+async def handle_bybit_message(
+    message,
+):
     try:
         payload = json.loads(
             message
@@ -990,11 +982,9 @@ async def handle_message(message):
     ):
         print(
             f"[{utc_now()}] "
-            "SUBSCRIPTION RESPONSE | "
-            "success="
-            f"{payload.get('success')} | "
-            "message="
-            f"{payload.get('ret_msg', '')}",
+            "BYBIT SUBSCRIPTION | "
+            f"success={payload.get('success')} | "
+            f"message={payload.get('ret_msg', '')}",
             flush=True,
         )
 
@@ -1012,23 +1002,205 @@ async def handle_message(message):
     if topic.startswith(
         "tickers."
     ):
-        update_ticker_state(
+        update_bybit_ticker(
             topic,
             data,
         )
 
-        return
-
-    if topic.startswith(
+    elif topic.startswith(
         "allLiquidation."
     ):
-        handle_liquidation(
+        handle_bybit_liquidation(
             data
         )
 
 
+async def run_bybit():
+    while True:
+        try:
+            async with websockets.connect(
+                BYBIT_WS_URL,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=10,
+            ) as websocket:
+
+                print(
+                    f"[{utc_now()}] "
+                    "Connected to BYBIT.",
+                    flush=True,
+                )
+
+                await subscribe_bybit(
+                    websocket
+                )
+
+                async for message in websocket:
+                    await handle_bybit_message(
+                        message
+                    )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            print(
+                f"[{utc_now()}] "
+                "BYBIT ERROR | "
+                f"{type(exc).__name__}: "
+                f"{exc}",
+                flush=True,
+            )
+
+            print(
+                "BYBIT reconnecting in "
+                "5 seconds...",
+                flush=True,
+            )
+
+            await asyncio.sleep(5)
+
+
 # --------------------------------------------------
-# Main live loop
+# Binance
+# --------------------------------------------------
+
+def handle_binance_liquidation(
+    payload,
+):
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return
+
+    order = payload.get(
+        "o",
+        {},
+    )
+
+    if not isinstance(
+        order,
+        dict,
+    ):
+        return
+
+    symbol = order.get(
+        "s",
+        "",
+    )
+
+    if symbol not in SYMBOLS:
+        return
+
+    side = order.get(
+        "S",
+        "",
+    )
+
+    size = order.get(
+        "q",
+        "0",
+    )
+
+    average_price = order.get(
+        "ap",
+        "0",
+    )
+
+    order_price = order.get(
+        "p",
+        "0",
+    )
+
+    price = (
+        average_price
+        if safe_float(average_price) > 0
+        else order_price
+    )
+
+    # Binance forceOrder:
+    # SELL liquidation order closes LONG.
+    # BUY liquidation order closes SHORT.
+    if side == "SELL":
+        position = "LONG"
+
+    elif side == "BUY":
+        position = "SHORT"
+
+    else:
+        return
+
+    add_liquidation_event(
+        "BINANCE",
+        symbol,
+        position,
+        price,
+        size,
+    )
+
+
+async def handle_binance_message(
+    message,
+):
+    try:
+        payload = json.loads(
+            message
+        )
+
+    except json.JSONDecodeError:
+        return
+
+    handle_binance_liquidation(
+        payload
+    )
+
+
+async def run_binance():
+    while True:
+        try:
+            async with websockets.connect(
+                BINANCE_WS_URL,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=10,
+            ) as websocket:
+
+                print(
+                    f"[{utc_now()}] "
+                    "Connected to BINANCE "
+                    "force-order stream.",
+                    flush=True,
+                )
+
+                async for message in websocket:
+                    await handle_binance_message(
+                        message
+                    )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            print(
+                f"[{utc_now()}] "
+                "BINANCE ERROR | "
+                f"{type(exc).__name__}: "
+                f"{exc}",
+                flush=True,
+            )
+
+            print(
+                "BINANCE reconnecting in "
+                "5 seconds...",
+                flush=True,
+            )
+
+            await asyncio.sleep(5)
+
+
+# --------------------------------------------------
+# Main
 # --------------------------------------------------
 
 async def run():
@@ -1041,32 +1213,35 @@ async def run():
 
     print(
         "TriFlux 24/7 "
-        "Global Crypto "
-        "Liquidation Radar",
+        "Global Crypto Liquidation Radar",
         flush=True,
     )
 
     print(
-        "Source: Bybit "
-        "Public WebSocket",
+        "Stage 6: "
+        "Bybit + Binance",
         flush=True,
     )
 
     print(
-        "Markets: "
-        "BTCUSDT, ETHUSDT",
+        "Markets: BTCUSDT, ETHUSDT",
         flush=True,
     )
 
     print(
-        "Stage 5: "
-        "REAL risk alerts -> Telegram",
+        "Aggregation: "
+        "1m / 5m / 15m",
         flush=True,
     )
 
     print(
-        "SELF TEST alerts -> "
-        "LOG ONLY",
+        "REAL global risk alerts "
+        "-> Telegram",
+        flush=True,
+    )
+
+    print(
+        "SELF TEST alerts -> LOG ONLY",
         flush=True,
     )
 
@@ -1075,50 +1250,10 @@ async def run():
         flush=True,
     )
 
-    while True:
-        try:
-            async with websockets.connect(
-                BYBIT_WS_URL,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=10,
-            ) as websocket:
-
-                print(
-                    f"[{utc_now()}] "
-                    "Connected to Bybit "
-                    "public WebSocket.",
-                    flush=True,
-                )
-
-                await subscribe(
-                    websocket
-                )
-
-                async for message in websocket:
-                    await handle_message(
-                        message
-                    )
-
-        except asyncio.CancelledError:
-            raise
-
-        except Exception as exc:
-            print(
-                f"[{utc_now()}] "
-                "WebSocket error: "
-                f"{type(exc).__name__}: "
-                f"{exc}",
-                flush=True,
-            )
-
-            print(
-                "Reconnecting in "
-                "5 seconds...",
-                flush=True,
-            )
-
-            await asyncio.sleep(5)
+    await asyncio.gather(
+        run_bybit(),
+        run_binance(),
+    )
 
 
 if __name__ == "__main__":
@@ -1129,7 +1264,6 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print(
-            "TriFlux Live Radar "
-            "stopped.",
+            "TriFlux Live Radar stopped.",
             flush=True,
         )
