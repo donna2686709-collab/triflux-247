@@ -1,4 +1,5 @@
 import html
+import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -31,6 +32,32 @@ def _clean(value):
     )
 
 
+def _clean_xml(raw):
+    if isinstance(raw, bytes):
+        raw = raw.decode(
+            "utf-8",
+            errors="replace",
+        )
+
+    raw = str(raw)
+
+    # Remove control characters that are illegal in XML 1.0.
+    raw = re.sub(
+        r"[\x00-\x08\x0B\x0C\x0E-\x1F]",
+        "",
+        raw,
+    )
+
+    # Nasdaq feeds can contain bare ampersands.
+    raw = re.sub(
+        r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)",
+        "&amp;",
+        raw,
+    )
+
+    return raw
+
+
 def _text(node, name):
     value = node.findtext(name)
 
@@ -51,8 +78,10 @@ def fetch_nasdaq_equity_alerts():
 
         for feed_name, url in NASDAQ_ALERT_FEEDS:
             try:
+                raw = download(url)
+
                 root = ET.fromstring(
-                    download(url)
+                    _clean_xml(raw)
                 )
 
                 items = root.findall(
