@@ -2,14 +2,15 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 3:
+Stage 4:
 - Bybit public WebSocket
 - BTCUSDT / ETHUSDT
 - Persistent ticker state
-- Correct Bybit liquidation position-side mapping
+- Correct liquidation position-side mapping
 - Rolling 1m / 5m / 15m liquidation totals
-- Preliminary risk-level engine
-- Alert cooldown preparation
+- Risk-level engine
+- Alert cooldown
+- Immediate alert on risk-level escalation
 
 No Bybit API key is required.
 Telegram sending is NOT enabled yet.
@@ -39,8 +40,6 @@ ROLLING_WINDOWS = {
     "15m": 900,
 }
 
-# Preliminary alert thresholds.
-# We will calibrate these with live data before Telegram is enabled.
 ALERT_THRESHOLDS = {
     "BTCUSDT": {
         "WATCH": 50_000,
@@ -56,6 +55,13 @@ ALERT_THRESHOLDS = {
     },
 }
 
+RISK_RANK = {
+    "WATCH": 1,
+    "MEDIUM": 2,
+    "HIGH": 3,
+    "CRITICAL": 4,
+}
+
 ALERT_COOLDOWN_SECONDS = 300
 
 
@@ -69,8 +75,11 @@ last_heartbeat = {
     for symbol in SYMBOLS
 }
 
-last_alert_time = {
-    symbol: 0.0
+alert_state = {
+    symbol: {
+        "time": 0.0,
+        "level": None,
+    }
     for symbol in SYMBOLS
 }
 
@@ -97,8 +106,8 @@ def liquidation_value(price, size):
 
 
 def cleanup_liquidations(now):
-    oldest_allowed = now - max(
-        ROLLING_WINDOWS.values()
+    oldest_allowed = (
+        now - max(ROLLING_WINDOWS.values())
     )
 
     while liquidation_events:
@@ -174,16 +183,44 @@ def get_risk_level(symbol, total_value):
 
 
 def dominant_side(stats):
-    long_value = stats["long"]
-    short_value = stats["short"]
-
-    if long_value > short_value:
+    if stats["long"] > stats["short"]:
         return "LONG"
 
-    if short_value > long_value:
+    if stats["short"] > stats["long"]:
         return "SHORT"
 
     return "BALANCED"
+
+
+def should_alert(symbol, new_level, now):
+    state = alert_state[symbol]
+
+    previous_level = state["level"]
+    previous_time = state["time"]
+
+    if previous_level is None:
+        return True, "NEW"
+
+    previous_rank = RISK_RANK.get(
+        previous_level,
+        0,
+    )
+
+    new_rank = RISK_RANK.get(
+        new_level,
+        0,
+    )
+
+    if new_rank > previous_rank:
+        return True, "ESCALATION"
+
+    if (
+        now - previous_time
+        >= ALERT_COOLDOWN_SECONDS
+    ):
+        return True, "COOLDOWN_EXPIRED"
+
+    return False, "COOLDOWN"
 
 
 def maybe_print_risk_alert(symbol, stats):
@@ -197,30 +234,46 @@ def maybe_print_risk_alert(symbol, stats):
 
     now = time.time()
 
-    previous_alert = last_alert_time.get(
+    allowed, reason = should_alert(
         symbol,
-        0.0,
+        level,
+        now,
     )
 
-    if (
-        now - previous_alert
-        < ALERT_COOLDOWN_SECONDS
-    ):
+    if not allowed:
         return
 
-    last_alert_time[symbol] = now
+    previous_level = alert_state[
+        symbol
+    ]["level"]
+
+    alert_state[symbol] = {
+        "time": now,
+        "level": level,
+    }
 
     side = dominant_side(stats)
+
+    if reason == "ESCALATION":
+        transition = (
+            f"{previous_level}->{level}"
+        )
+    else:
+        transition = level
 
     print(
         f"[{utc_now()}] "
         f"RISK ALERT | "
         f"{level} | "
         f"{symbol} | "
+        f"reason={reason} | "
+        f"transition={transition} | "
         f"1m liquidation="
         f"{format_money(stats['total'])} | "
-        f"LONG={format_money(stats['long'])} | "
-        f"SHORT={format_money(stats['short'])} | "
+        f"LONG="
+        f"{format_money(stats['long'])} | "
+        f"SHORT="
+        f"{format_money(stats['short'])} | "
         f"dominant={side} | "
         f"events={stats['count']}",
         flush=True,
@@ -233,10 +286,11 @@ def print_liquidation_summary(symbol):
     cleanup_liquidations(now)
 
     summaries = {}
-
     parts = []
 
-    for label, seconds in ROLLING_WINDOWS.items():
+    for label, seconds in (
+        ROLLING_WINDOWS.items()
+    ):
         stats = calculate_window(
             symbol,
             seconds,
@@ -247,9 +301,12 @@ def print_liquidation_summary(symbol):
 
         parts.append(
             f"{label}: "
-            f"LONG={format_money(stats['long'])} | "
-            f"SHORT={format_money(stats['short'])} | "
-            f"TOTAL={format_money(stats['total'])} | "
+            f"LONG="
+            f"{format_money(stats['long'])} | "
+            f"SHORT="
+            f"{format_money(stats['short'])} | "
+            f"TOTAL="
+            f"{format_money(stats['total'])} | "
             f"events={stats['count']}"
         )
 
@@ -330,13 +387,18 @@ def update_ticker_state(topic, data):
         f"[{utc_now()}] "
         f"MARKET HEARTBEAT | "
         f"{symbol} | "
-        f"last={state.get('lastPrice', 'N/A')} | "
-        f"mark={state.get('markPrice', 'N/A')} | "
-        f"index={state.get('indexPrice', 'N/A')} | "
-        f"OI={state.get('openInterest', 'N/A')} | "
+        f"last="
+        f"{state.get('lastPrice', 'N/A')} | "
+        f"mark="
+        f"{state.get('markPrice', 'N/A')} | "
+        f"index="
+        f"{state.get('indexPrice', 'N/A')} | "
+        f"OI="
+        f"{state.get('openInterest', 'N/A')} | "
         f"OI_value="
         f"{state.get('openInterestValue', 'N/A')} | "
-        f"funding={state.get('fundingRate', 'N/A')} | "
+        f"funding="
+        f"{state.get('fundingRate', 'N/A')} | "
         f"turnover24h="
         f"{state.get('turnover24h', 'N/A')} | "
         f"volume24h="
@@ -381,9 +443,9 @@ def handle_liquidation(data):
             size,
         )
 
-        # Bybit allLiquidation official semantics:
-        # S = Buy  -> LONG position liquidated
-        # S = Sell -> SHORT position liquidated
+        # Bybit allLiquidation:
+        # Buy  = LONG position liquidated
+        # Sell = SHORT position liquidated
         if side == "Buy":
             liquidated_position = "LONG"
 
@@ -439,7 +501,8 @@ async def handle_message(message):
         print(
             f"[{utc_now()}] "
             f"SUBSCRIPTION RESPONSE | "
-            f"success={payload.get('success')} | "
+            f"success="
+            f"{payload.get('success')} | "
             f"message="
             f"{payload.get('ret_msg', '')}",
             flush=True,
@@ -497,8 +560,8 @@ async def run():
     )
 
     print(
-        "Stage 3: corrected position side + "
-        "rolling totals + risk engine",
+        "Stage 4: risk escalation "
+        "can bypass cooldown",
         flush=True,
     )
 
