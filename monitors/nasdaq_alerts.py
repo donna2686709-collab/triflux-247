@@ -14,10 +14,12 @@ NASDAQ_ARCHIVE_URL = (
 
 
 def _clean_text(value):
+    value = str(value or "")
+
     value = re.sub(
         r"<script\b[^>]*>.*?</script>",
         " ",
-        str(value or ""),
+        value,
         flags=re.IGNORECASE | re.DOTALL,
     )
 
@@ -43,14 +45,20 @@ def _clean_text(value):
     )
 
 
-def _extract_alerts(raw):
+def _to_text(raw):
     if isinstance(raw, bytes):
-        text = raw.decode(
+        return raw.decode(
             "utf-8",
             errors="replace",
         )
-    else:
-        text = str(raw or "")
+
+    return str(raw or "")
+
+
+def _extract_alerts(raw):
+    text = _to_text(
+        raw
+    )
 
     rows = []
 
@@ -70,18 +78,20 @@ def _extract_alerts(raw):
             match.group(2)
         )
 
-        if not title:
+        if not href or not title:
             continue
 
+        href_lower = href.lower()
         title_lower = title.lower()
 
-        is_equity_alert = (
-            "equity trader alert" in title_lower
+        is_alert = (
+            "tradernews.aspx" in href_lower
+            or "equity trader alert" in title_lower
             or "equity regulatory alert" in title_lower
             or "equity technical update" in title_lower
         )
 
-        if not is_equity_alert:
+        if not is_alert:
             continue
 
         link = urllib.parse.urljoin(
@@ -113,6 +123,57 @@ def _extract_alerts(raw):
     return unique_rows
 
 
+def _print_debug_match(text):
+    text_lower = text.lower()
+
+    search_terms = [
+        "equity trader alert",
+        "tradernews.aspx",
+        "equity regulatory alert",
+        "equity technical update",
+    ]
+
+    position = -1
+    matched_term = ""
+
+    for term in search_terms:
+        position = text_lower.find(
+            term
+        )
+
+        if position != -1:
+            matched_term = term
+            break
+
+    if position == -1:
+        print(
+            "Nasdaq Equity Alerts DEBUG: "
+            "no alert text or TraderNews link found."
+        )
+        return
+
+    start = max(
+        0,
+        position - 1000,
+    )
+
+    end = min(
+        len(text),
+        position + 3000,
+    )
+
+    snippet = text[
+        start:end
+    ]
+
+    print(
+        "Nasdaq Equity Alerts DEBUG MATCH: "
+        f"term={matched_term!r}, "
+        f"position={position}, "
+        f"html={snippet!r}"
+    )
+
+
 def fetch_nasdaq_equity_alerts():
     source = "Nasdaq Equity Alerts"
     state_file = ".last_nasdaq_equity_alerts"
@@ -122,45 +183,19 @@ def fetch_nasdaq_equity_alerts():
             NASDAQ_ARCHIVE_URL
         )
 
-        if isinstance(raw, bytes):
-            debug_text = raw.decode(
-                "utf-8",
-                errors="replace",
-            )
-        else:
-            debug_text = str(raw or "")
-
-                debug_lower = debug_text.lower()
-
-        debug_position = debug_lower.find(
-            "equity trader alert"
+        debug_text = _to_text(
+            raw
         )
 
-        if debug_position == -1:
-            debug_position = debug_lower.find(
-                "tradernews.aspx"
-            )
+        print(
+            "Nasdaq Equity Alerts: "
+            f"archive response length="
+            f"{len(debug_text)}."
+        )
 
-        if debug_position == -1:
-            print(
-                "Nasdaq Equity Alerts DEBUG: "
-                "no Equity Trader Alert text found."
-            )
-        else:
-            debug_start = max(
-                0,
-                debug_position - 1000,
-            )
-
-            debug_end = min(
-                len(debug_text),
-                debug_position + 3000,
-            )
-
-            print(
-                "Nasdaq Equity Alerts DEBUG MATCH: "
-                f"{repr(debug_text[debug_start:debug_end])}"
-            )
+        _print_debug_match(
+            debug_text
+        )
 
         rows = _extract_alerts(
             raw
@@ -168,7 +203,8 @@ def fetch_nasdaq_equity_alerts():
 
         print(
             "Nasdaq Equity Alerts: "
-            f"found {len(rows)} official alert(s)."
+            f"found {len(rows)} "
+            "candidate official alert(s)."
         )
 
         if not rows:
