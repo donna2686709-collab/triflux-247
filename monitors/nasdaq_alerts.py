@@ -56,8 +56,8 @@ def _extract_alerts(raw):
 
     link_pattern = re.compile(
         r'<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>'
-        r'(.*?)'
-        r'</a>',
+        r"(.*?)"
+        r"</a>",
         flags=re.IGNORECASE | re.DOTALL,
     )
 
@@ -118,7 +118,7 @@ def fetch_nasdaq_equity_alerts():
     state_file = ".last_nasdaq_equity_alerts"
 
     try:
-                raw = download(
+        raw = download(
             NASDAQ_ARCHIVE_URL
         )
 
