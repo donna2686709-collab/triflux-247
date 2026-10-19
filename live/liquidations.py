@@ -2,7 +2,7 @@
 TriFlux 24/7
 Global Crypto Liquidation Radar
 
-Stage 7:
+Stage 7.1:
 - Bybit + Binance + Gate + Bitget
 - BTCUSDT / ETHUSDT
 - Exchange-specific normalization
@@ -11,6 +11,7 @@ Stage 7:
 - Risk escalation
 - Telegram alerts for REAL market signals only
 - Deterministic self-test NEVER sends Telegram
+- Bitget application-level ping every 30 seconds
 """
 
 import asyncio
@@ -50,18 +51,20 @@ BINANCE_WS_URL = (
 
 GATE_WS_URL = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
-# Bitget UTA / v3 public websocket.
 BITGET_WS_URL = "wss://ws.bitget.com/v3/ws/public"
+
 
 SYMBOLS = [
     "BTCUSDT",
     "ETHUSDT",
 ]
 
+
 GATE_CONTRACTS = {
     "BTC_USDT": "BTCUSDT",
     "ETH_USDT": "ETHUSDT",
 }
+
 
 EXCHANGES = [
     "BYBIT",
@@ -70,13 +73,17 @@ EXCHANGES = [
     "BITGET",
 ]
 
+
 ROLLING_WINDOWS = {
     "1m": 60,
     "5m": 300,
     "15m": 900,
 }
 
+
 HEARTBEAT_SECONDS = 30
+
+BITGET_PING_SECONDS = 30
 
 ALERT_COOLDOWN_SECONDS = 300
 
@@ -141,8 +148,6 @@ alert_state = {
 }
 
 
-# Gate multiplier is loaded from official
-# contract metadata before the websocket starts.
 gate_multiplier = {
     "BTC_USDT": None,
     "ETH_USDT": None,
@@ -150,7 +155,7 @@ gate_multiplier = {
 
 
 # ==================================================
-# Basic helpers
+# Helpers
 # ==================================================
 
 def utc_now():
@@ -162,6 +167,7 @@ def utc_now():
 def safe_float(value):
     try:
         return float(value)
+
     except (TypeError, ValueError):
         return 0.0
 
@@ -405,17 +411,25 @@ def build_telegram_alert(
         "",
         (
             "Price: "
-            f"{format_price(market.get('lastPrice'))}"
+            f"{format_price(
+                market.get('lastPrice')
+            )}"
         ),
         (
             "Mark: "
-            f"{format_price(market.get('markPrice'))}"
+            f"{format_price(
+                market.get('markPrice')
+            )}"
         ),
         (
             "Open Interest: "
-            f"{format_money(safe_float(
-                market.get('openInterestValue')
-            ))}"
+            f"{format_money(
+                safe_float(
+                    market.get(
+                        'openInterestValue'
+                    )
+                )
+            )}"
         ),
         (
             "Funding: "
@@ -467,7 +481,8 @@ def send_real_market_alert(
         print(
             f"[{utc_now()}] "
             "TELEGRAM ERROR | "
-            f"{type(exc).__name__}: {exc}",
+            f"{type(exc).__name__}: "
+            f"{exc}",
             flush=True,
         )
 
@@ -516,6 +531,7 @@ def maybe_process_risk_alert(
         transition = (
             f"{previous_level}->{level}"
         )
+
     else:
         transition = level
 
@@ -580,7 +596,8 @@ def run_escalation_self_test():
 
     print(
         "SELF TEST SAFETY: "
-        "Telegram disabled for simulated alerts.",
+        "Telegram disabled for "
+        "simulated alerts.",
         flush=True,
     )
 
@@ -719,7 +736,6 @@ def print_global_summary(symbol):
     cleanup_liquidations(now)
 
     summaries = {}
-
     parts = []
 
     for label, seconds in (
@@ -750,7 +766,6 @@ def print_global_summary(symbol):
     )
 
     exchange_stats = {}
-
     split_parts = []
 
     for exchange in EXCHANGES:
@@ -785,7 +800,7 @@ def print_global_summary(symbol):
 
 
 # ==================================================
-# Gate contract metadata
+# Gate metadata
 # ==================================================
 
 def fetch_gate_multiplier(
@@ -840,7 +855,8 @@ def load_gate_multipliers():
             f"[{utc_now()}] "
             "GATE CONTRACT | "
             f"{contract} | "
-            f"quanto_multiplier={multiplier}",
+            "quanto_multiplier="
+            f"{multiplier}",
             flush=True,
         )
 
@@ -947,9 +963,6 @@ def handle_bybit_liquidation(data):
             item.get("v")
         )
 
-        # Bybit official semantics:
-        # Buy = long position liquidated.
-        # Sell = short position liquidated.
         if side == "Buy":
             position = "LONG"
 
@@ -990,7 +1003,6 @@ async def handle_bybit_message(message):
         return
 
     topic = payload.get("topic", "")
-
     data = payload.get("data")
 
     if topic.startswith("tickers."):
@@ -1037,7 +1049,8 @@ async def run_bybit():
             print(
                 f"[{utc_now()}] "
                 "BYBIT ERROR | "
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: "
+                f"{exc}",
                 flush=True,
             )
 
@@ -1075,9 +1088,6 @@ def handle_binance_liquidation(
             order.get("p")
         )
 
-    # Prefer accumulated filled quantity
-    # when available; fall back to original
-    # quantity for compatibility.
     size = safe_float(
         order.get("z")
     )
@@ -1087,8 +1097,6 @@ def handle_binance_liquidation(
             order.get("q")
         )
 
-    # SELL force order closes a long.
-    # BUY force order closes a short.
     if side == "SELL":
         position = "LONG"
 
@@ -1147,7 +1155,8 @@ async def run_binance():
             print(
                 f"[{utc_now()}] "
                 "BINANCE ERROR | "
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: "
+                f"{exc}",
                 flush=True,
             )
 
@@ -1232,7 +1241,7 @@ def handle_gate_liquidation(
             print(
                 f"[{utc_now()}] "
                 "GATE SKIP | "
-                f"missing multiplier | "
+                "missing multiplier | "
                 f"{contract}",
                 flush=True,
             )
@@ -1254,21 +1263,12 @@ def handle_gate_liquidation(
             signed_size
         )
 
-        # Gate USDT futures:
-        # contracts * multiplier =
-        # underlying asset quantity.
         value = (
             contracts
             * multiplier
             * price
         )
 
-        # Gate public liquidation size is
-        # signed order quantity.
-        # Negative = sell liquidation order
-        # -> long position liquidated.
-        # Positive = buy liquidation order
-        # -> short position liquidated.
         if signed_size < 0:
             position = "LONG"
 
@@ -1334,7 +1334,8 @@ async def run_gate():
             print(
                 f"[{utc_now()}] "
                 "GATE ERROR | "
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: "
+                f"{exc}",
                 flush=True,
             )
 
@@ -1367,6 +1368,31 @@ async def subscribe_bitget(ws):
     )
 
 
+async def bitget_keepalive(ws):
+    """
+    Bitget requires an application-level
+    text ping periodically.
+
+    This task is tied to one websocket
+    connection. When that connection closes,
+    the task is cancelled and recreated after
+    reconnect.
+    """
+
+    while True:
+        await asyncio.sleep(
+            BITGET_PING_SECONDS
+        )
+
+        await ws.send("ping")
+
+        print(
+            f"[{utc_now()}] "
+            "BITGET PING SENT",
+            flush=True,
+        )
+
+
 def handle_bitget_liquidation(
     payload,
 ):
@@ -1396,10 +1422,10 @@ def handle_bitget_liquidation(
         if not isinstance(item, dict):
             continue
 
-        symbol = item.get(
-            "symbol",
-            "",
-        ).upper()
+        symbol = (
+            item.get("symbol", "")
+            .upper()
+        )
 
         if symbol not in SYMBOLS:
             continue
@@ -1422,10 +1448,6 @@ def handle_bitget_liquidation(
         if amount <= 0:
             continue
 
-        # Bitget official liquidation
-        # channel semantics:
-        # buy = long position liquidation
-        # sell = short position liquidation.
         if side == "buy":
             position = "LONG"
 
@@ -1435,11 +1457,8 @@ def handle_bitget_liquidation(
         else:
             continue
 
-        # Bitget documentation defines
-        # amount in quote coin.
-        # Therefore amount itself is the
-        # normalized quote value and must
-        # NOT be multiplied by price again.
+        # Bitget liquidation amount is
+        # already denominated in quote coin.
         value = amount
 
         add_liquidation_event(
@@ -1454,11 +1473,15 @@ def handle_bitget_liquidation(
 
 async def run_bitget():
     while True:
+        keepalive_task = None
+
         try:
+            # Disable protocol-level automatic
+            # ping for Bitget. We explicitly use
+            # Bitget's required text ping.
             async with websockets.connect(
                 BITGET_WS_URL,
-                ping_interval=20,
-                ping_timeout=20,
+                ping_interval=None,
                 close_timeout=10,
             ) as ws:
 
@@ -1470,11 +1493,20 @@ async def run_bitget():
 
                 await subscribe_bitget(ws)
 
+                keepalive_task = (
+                    asyncio.create_task(
+                        bitget_keepalive(ws)
+                    )
+                )
+
                 async for message in ws:
-                    # Bitget may use textual
-                    # ping/pong messages.
-                    if message == "ping":
-                        await ws.send("pong")
+                    if message == "pong":
+                        print(
+                            f"[{utc_now()}] "
+                            "BITGET PONG RECEIVED",
+                            flush=True,
+                        )
+
                         continue
 
                     try:
@@ -1520,11 +1552,31 @@ async def run_bitget():
             print(
                 f"[{utc_now()}] "
                 "BITGET ERROR | "
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: "
+                f"{exc}",
                 flush=True,
             )
 
-            await asyncio.sleep(5)
+        finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+
+                try:
+                    await keepalive_task
+
+                except asyncio.CancelledError:
+                    pass
+
+                except Exception:
+                    pass
+
+        print(
+            "BITGET reconnecting in "
+            "5 seconds...",
+            flush=True,
+        )
+
+        await asyncio.sleep(5)
 
 
 # ==================================================
@@ -1555,7 +1607,7 @@ async def run():
     )
 
     print(
-        "Stage 7: "
+        "Stage 7.1: "
         "Bybit + Binance + Gate + Bitget",
         flush=True,
     )
@@ -1567,6 +1619,12 @@ async def run():
 
     print(
         "Aggregation: 1m / 5m / 15m",
+        flush=True,
+    )
+
+    print(
+        "Bitget keepalive: "
+        "text ping every 30 seconds",
         flush=True,
     )
 
