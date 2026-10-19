@@ -6,59 +6,17 @@ from core.network import download
 from core.telegram import send_one
 
 
-def _extract_page_title(page):
-    patterns = [
-        r'<h1[^>]*>(.*?)</h1>',
-        (
-            r'<meta[^>]+'
-            r'property=["\']og:title["\']'
-            r'[^>]+content=["\']([^"\']+)'
-        ),
-        (
-            r'<meta[^>]+'
-            r'content=["\']([^"\']+)["\']'
-            r'[^>]+property=["\']og:title["\']'
-        ),
-        r'<title[^>]*>(.*?)</title>',
-    ]
-
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            page,
-            re.I | re.S,
-        )
-
-        if not match:
-            continue
-
-        title = " ".join(
-            html.unescape(
-                re.sub(
-                    r"<[^>]+>",
-                    " ",
-                    match.group(1),
-                )
-            ).split()
-        )
-
-        if title:
-            return title
-
-    return ""
-
-
 def fetch_treasury_tic():
     source = "U.S. Treasury TIC"
 
     try:
-        index_url = (
+        url = (
             "https://home.treasury.gov/"
             "news/press-releases"
         )
 
         page = download(
-            index_url
+            url
         ).decode(
             "utf-8",
             errors="ignore",
@@ -66,92 +24,138 @@ def fetch_treasury_tic():
 
         clean_page = html.unescape(page)
 
-        matches = re.findall(
-            r'/news/press-releases/'
-            r'[A-Za-z]{1,10}[0-9]{2,10}',
-            clean_page,
-            re.I,
+        # Find all Treasury press-release links.
+        matches = list(
+            re.finditer(
+                r'/news/press-releases/'
+                r'[A-Za-z]{1,10}[0-9]{2,10}',
+                clean_page,
+                re.I,
+            )
         )
 
-        paths = []
-
-        for path in matches:
-            path = path.rstrip("/")
-
-            if path not in paths:
-                paths.append(path)
-
-        print(
-            "Treasury TIC DEBUG: "
-            f"found {len(paths)} unique "
-            "press-release links."
-        )
-
-        if not paths:
+        if not matches:
             raise RuntimeError(
                 "No Treasury press release "
                 "links found"
             )
 
-        # Print and inspect only the newest 20 releases.
-        for number, path in enumerate(
-            paths[:20],
-            start=1,
-        ):
+        candidates = []
+        seen = set()
+
+        for match in matches:
+            path = match.group(0).rstrip("/")
+
+            if path in seen:
+                continue
+
+            seen.add(path)
+
+            # Read the HTML surrounding this release.
+            start = max(
+                0,
+                match.start() - 500,
+            )
+
+            end = min(
+                len(clean_page),
+                match.end() + 3000,
+            )
+
+            context = clean_page[
+                start:end
+            ]
+
+            text = " ".join(
+                html.unescape(
+                    re.sub(
+                        r"<[^>]+>",
+                        " ",
+                        context,
+                    )
+                ).split()
+            )
+
+            lower_text = text.casefold()
+
+            if (
+                "treasury international capital data"
+                not in lower_text
+            ):
+                continue
+
             link = urllib.parse.urljoin(
                 "https://home.treasury.gov",
                 path,
             )
 
-            try:
-                article = download(
-                    link
-                ).decode(
-                    "utf-8",
-                    errors="ignore",
+            candidates.append(
+                (
+                    link,
+                    text,
+                )
+            )
+
+        if not candidates:
+            raise RuntimeError(
+                "No Treasury TIC release "
+                "found on press releases page"
+            )
+
+        link, context_text = candidates[0]
+
+        # Extract the official TIC title directly
+        # from the surrounding release-list text.
+        title_match = re.search(
+            r'Treasury International Capital Data'
+            r'(?:\s+for\s+'
+            r'(?:January|February|March|April|May|June|'
+            r'July|August|September|October|November|December)'
+            r'\s+\d{4})?',
+            context_text,
+            re.I,
+        )
+
+        if title_match:
+            title = title_match.group(0)
+
+            # Normalize capitalization while preserving
+            # the month/year portion.
+            if title.casefold().startswith(
+                "treasury international capital data"
+            ):
+                suffix = title[
+                    len(
+                        "Treasury International Capital Data"
+                    ):
+                ]
+
+                title = (
+                    "Treasury International Capital Data"
+                    + suffix
                 )
 
-                title = _extract_page_title(
-                    article
-                )
+        else:
+            title = (
+                "Treasury International Capital Data"
+            )
 
-                print(
-                    "Treasury TIC DEBUG "
-                    f"#{number}: "
-                    f"{link} | "
-                    f"title={title!r}"
-                )
+        print(
+            "Treasury TIC: found latest release: "
+            f"{title}"
+        )
 
-                if (
-                    "treasury international capital data"
-                    in title.casefold()
-                ):
-                    print(
-                        "Treasury TIC: "
-                        "found latest release: "
-                        f"{title}"
-                    )
+        print(
+            "Treasury TIC: official link: "
+            f"{link}"
+        )
 
-                    send_one(
-                        source,
-                        "🇺🇸",
-                        title,
-                        link,
-                        ".last_treasury_tic",
-                    )
-
-                    return
-
-            except Exception as error:
-                print(
-                    "Treasury TIC DEBUG "
-                    f"#{number} failed: "
-                    f"{error}"
-                )
-
-        raise RuntimeError(
-            "No Treasury TIC release found "
-            "among newest 20 releases"
+        send_one(
+            source,
+            "🇺🇸",
+            title,
+            link,
+            ".last_treasury_tic",
         )
 
     except Exception as error:
