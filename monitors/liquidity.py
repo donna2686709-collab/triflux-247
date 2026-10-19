@@ -198,12 +198,46 @@ def fetch_on_rrp():
             )
         )
 
-        operations = (
+        repo = (
             data.get("repo")
-            or data.get("repos")
-            or data.get("operations")
-            or []
+            or {}
         )
+
+        if isinstance(repo, dict):
+            operations = (
+                repo.get("operations")
+                or repo.get("operation")
+                or repo.get("propositions")
+                or []
+            )
+        elif isinstance(repo, list):
+            operations = repo
+        else:
+            operations = []
+
+        if not operations:
+            operations = (
+                data.get("operations")
+                or data.get("propositions")
+                or []
+            )
+
+        if isinstance(operations, dict):
+            operations = (
+                operations.get("operation")
+                or operations.get("operations")
+                or operations.get("propositions")
+                or []
+            )
+
+        if not isinstance(
+            operations,
+            list,
+        ):
+            raise RuntimeError(
+                "ON RRP API returned "
+                "an unexpected data structure"
+            )
 
         if not operations:
             raise RuntimeError(
