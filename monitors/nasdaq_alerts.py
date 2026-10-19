@@ -118,8 +118,22 @@ def fetch_nasdaq_equity_alerts():
     state_file = ".last_nasdaq_equity_alerts"
 
     try:
-        raw = download(
+                raw = download(
             NASDAQ_ARCHIVE_URL
+        )
+
+        if isinstance(raw, bytes):
+            debug_text = raw.decode(
+                "utf-8",
+                errors="replace",
+            )
+        else:
+            debug_text = str(raw or "")
+
+        print(
+            "Nasdaq Equity Alerts DEBUG: "
+            f"response length={len(debug_text)}, "
+            f"first 1500 chars={repr(debug_text[:1500])}"
         )
 
         rows = _extract_alerts(
