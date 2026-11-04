@@ -68,6 +68,9 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "Update news state"
+            # Discard only remaining uncommitted runner-generated files (e.g. tracked pycache).
+            # All staged monitoring state has already been committed above.
+            git reset --hard HEAD
             git pull --rebase origin main
             git push
           else
