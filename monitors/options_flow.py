@@ -9,7 +9,7 @@ import json
 import os
 import re
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as clock_time
 from zoneinfo import ZoneInfo
 
 SOURCE_URL = "https://www.cboe.com/us/options/market_statistics/market/"
@@ -80,7 +80,14 @@ def fetch_options_flow():
         latest = _parse(page)
         # Cboe table clock labels alone are not unique across trading days.
         # Date is used for reset protection, not asserted as the source timestamp.
-        market_date = datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+        chicago_now = datetime.now(ZoneInfo("America/Chicago"))
+        market_date = chicago_now.date().isoformat()
+        # A local date is not evidence that the source table is current.
+        if chicago_now.weekday() >= 5 or not (
+            clock_time(8, 30) <= chicago_now.time() <= clock_time(15, 15)
+        ):
+            print("Cboe Options Flow: outside monitoring window; stale tables ignored.")
+            return
         state = {}
         if os.path.exists(STATE_FILE):
             try:
@@ -96,6 +103,13 @@ def fetch_options_flow():
             return
 
         previous = state["latest"]
+        def _clock_minutes(label):
+            parsed = datetime.strptime(label, "%I:%M %p")
+            return parsed.hour * 60 + parsed.minute
+
+        if _clock_minutes(current_time) < _clock_minutes(previous["total"]["time"]):
+            print("Cboe Options Flow: source clock moved backwards; skipped safely.")
+            return
         if previous.get("total", {}).get("time") == current_time:
             print(f"Cboe Options Flow: no new observation ({current_time} CT).")
             return
